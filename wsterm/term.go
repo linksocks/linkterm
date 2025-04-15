@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
-	"runtime"
 	"strings"
 	"sync"
 	"syscall"
@@ -162,10 +161,7 @@ func (c *Client) Connect() error {
 	}
 
 	// Handle terminal resize
-	sigwinchCh := make(chan os.Signal, 1)
-	if runtime.GOOS != "windows" {
-		signal.Notify(sigwinchCh, syscall.SIGWINCH)
-	}
+	sigwinchCh := setupResizeHandler()
 
 	go func() {
 		for range sigwinchCh {
