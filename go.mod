@@ -9,7 +9,7 @@ require (
 	github.com/gorilla/websocket v1.5.3
 	github.com/rs/zerolog v1.33.0
 	github.com/spf13/cobra v1.9.1
-	github.com/zetxtech/wssocks v1.6.3
+	github.com/zetxtech/wssocks v1.6.4
 	golang.org/x/term v0.31.0
 )
 
