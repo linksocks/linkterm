@@ -6,7 +6,7 @@ on:
     types: [released]
 
 env:
-  REGISTRY_IMAGE: jackzzs/wssocks
+  REGISTRY_IMAGE: jackzzs/wsterm
 
 permissions:
   contents: read
