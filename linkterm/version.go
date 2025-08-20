@@ -3,6 +3,6 @@ package linkterm
 import "runtime"
 
 var (
-	Version = "v1.1.1"
+	Version = "v1.1.2"
 	Platform = runtime.GOOS + "/" + runtime.GOARCH
 )
