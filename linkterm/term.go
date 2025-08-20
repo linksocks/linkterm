@@ -111,7 +111,8 @@ func (c *Client) Connect() error {
 			}
 
 			// Reset line before printing disconnect message
-			fmt.Printf("\r\033[KDisconnected from terminal server after %s (%s)\n", durationStr, reason)
+			zerolog.SetGlobalLevel(zerolog.ErrorLevel)
+			fmt.Printf("\n\r\033[KDisconnected from terminal server after %s (%s)\n", durationStr, reason)
 		})
 	}
 
