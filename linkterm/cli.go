@@ -133,8 +133,7 @@ func runServer(cmd *cobra.Command, args []string) {
 		clientOpt := linksocks.DefaultClientOption().
 			WithWSURL(linksocksURL).
 			WithReverse(true).
-			WithLogger(logger).
-			WithNoEnvProxy(true)
+			WithLogger(logger)
 
 		wsClient := linksocks.NewLinkSocksClient(linksocksToken, clientOpt)
 		defer wsClient.Close()
@@ -192,8 +191,7 @@ func runClient(cmd *cobra.Command, args []string) {
 		clientOpt := linksocks.DefaultClientOption().
 			WithWSURL(linksocksURL).
 			WithSocksPort(wsocksLocalPort).
-			WithLogger(logger).
-			WithNoEnvProxy(true)
+			WithLogger(logger)
 
 		wsClient := linksocks.NewLinkSocksClient(linksocksToken, clientOpt)
 		defer wsClient.Close()
