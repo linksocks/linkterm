@@ -1,4 +1,4 @@
-package wsterm
+package linkterm
 
 import (
 	"fmt"
@@ -71,9 +71,9 @@ func (c *Client) Connect() error {
 
 	dialer.HandshakeTimeout = 5 * time.Second
 
-	// Set User-Agent header: WSTerm/{version} {SystemInfo}
+	// Set User-Agent header: LinkTerm/{version} {SystemInfo}
 	header := make(map[string][]string)
-	header["User-Agent"] = []string{fmt.Sprintf("WSTerm/%s %s", Version, Platform)}
+	header["User-Agent"] = []string{fmt.Sprintf("LinkTerm/%s %s", Version, Platform)}
 
 	conn, resp, err := dialer.Dial(c.URL, header)
 	if err != nil {

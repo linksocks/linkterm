@@ -6,7 +6,7 @@ on:
     types: [released]
 
 env:
-  REGISTRY_IMAGE: jackzzs/wsterm
+  REGISTRY_IMAGE: jackzzs/linkterm
 
 permissions:
   contents: read

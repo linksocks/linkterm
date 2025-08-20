@@ -1,6 +1,6 @@
 //go:build !windows
 
-package wsterm
+package linkterm
 
 import (
 	"os"

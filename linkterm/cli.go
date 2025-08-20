@@ -1,4 +1,4 @@
-package wsterm
+package linkterm
 
 import (
 	"fmt"
@@ -10,9 +10,9 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	"github.com/linksocks/linksocks/linksocks"
 	"github.com/rs/zerolog"
 	"github.com/spf13/cobra"
-	"github.com/zetxtech/wssocks/wssocks"
 )
 
 var (
@@ -27,9 +27,9 @@ var (
 	// Client flags
 	clientURL string
 
-	// WSSocks flags
-	wssocksToken string
-	wssocksURL   string
+	// LinkSocks flags
+	linksocksToken string
+	linksocksURL   string
 
 	// Proxy flag
 	proxyURL string
@@ -60,7 +60,7 @@ func initLogging(debug int) zerolog.Logger {
 // RunCLI runs the command line interface for the terminal server and client
 func RunCLI() {
 	rootCmd := &cobra.Command{
-		Use:   "wsterm",
+		Use:   "linkterm",
 		Short: "WebSocket Terminal client/server",
 		Long:  "A terminal over WebSocket with proxy and tunneling capabilities",
 	}
@@ -84,14 +84,14 @@ func RunCLI() {
 	serverCmd.Flags().StringVarP(&serverHost, "host", "H", "localhost", "Host address to bind to")
 	serverCmd.Flags().StringVarP(&shellPath, "shell", "s", "", "Shell to use")
 	serverCmd.Flags().CountVarP(&debugCount, "debug", "d", "Debug level (-d=debug, -dd=trace)")
-	serverCmd.Flags().StringVarP(&wssocksToken, "token", "t", "", "WSSocks token for intranet penetration")
-	serverCmd.Flags().StringVarP(&wssocksURL, "wssocks-url", "U", "https://wssocks.zetx.tech", "WSSocks server URL")
+	serverCmd.Flags().StringVarP(&linksocksToken, "token", "t", "", "LinkSocks token for intranet penetration")
+	serverCmd.Flags().StringVarP(&linksocksURL, "linksocks-url", "U", "https://linksocks.zetx.tech", "LinkSocks server URL")
 
 	// Add flags to client command
 	clientCmd.Flags().StringVarP(&clientURL, "url", "u", "ws://localhost:8080", "URL to connect to (e.g. example.com or ws://example.com:8080/terminal)")
 	clientCmd.Flags().CountVarP(&debugCount, "debug", "d", "Debug level (-d=debug, -dd=trace)")
-	clientCmd.Flags().StringVarP(&wssocksToken, "token", "t", "", "WSSocks token for intranet penetration")
-	clientCmd.Flags().StringVarP(&wssocksURL, "wssocks-url", "U", "https://wssocks.zetx.tech", "WSSocks server URL")
+	clientCmd.Flags().StringVarP(&linksocksToken, "token", "t", "", "LinkSocks token for intranet penetration")
+	clientCmd.Flags().StringVarP(&linksocksURL, "linksocks-url", "U", "https://linksocks.zetx.tech", "LinkSocks server URL")
 	clientCmd.Flags().StringVarP(&proxyURL, "proxy", "x", "", "Proxy URL (e.g. socks5://user:pass@host:port or http://user:pass@host:port)")
 
 	// Add commands to root command
@@ -127,29 +127,29 @@ func runServer(cmd *cobra.Command, args []string) {
 	server := NewServer(serverPort, serverHost, shellPath)
 	server.SetLogger(logger)
 
-	// Start WSSocks client if token is provided
-	if wssocksToken != "" {
-		logger.Info().Str("url", wssocksURL).Msg("Starting WSSocks connection")
-		clientOpt := wssocks.DefaultClientOption().
-			WithWSURL(wssocksURL).
+	// Start LinkSocks client if token is provided
+	if linksocksToken != "" {
+		logger.Info().Str("url", linksocksURL).Msg("Starting LinkSocks connection")
+		clientOpt := linksocks.DefaultClientOption().
+			WithWSURL(linksocksURL).
 			WithReverse(true).
 			WithLogger(logger).
 			WithNoEnvProxy(true)
 
-		wsClient := wssocks.NewWSSocksClient(wssocksToken, clientOpt)
+		wsClient := linksocks.NewLinkSocksClient(linksocksToken, clientOpt)
 		defer wsClient.Close()
 
 		err := wsClient.WaitReady(cmd.Context(), 0)
 		if err != nil {
-			logger.Error().Err(err).Msg("Failed to connect to wssocks server")
+			logger.Error().Err(err).Msg("Failed to connect to linksocks server")
 			os.Exit(1)
 		} else {
-			connectorID, err := wsClient.AddConnector(wssocksToken)
+			connectorID, err := wsClient.AddConnector(linksocksToken)
 			if err != nil {
 				logger.Error().Err(err).Msg("Failed to add connector token")
 				os.Exit(1)
 			} else {
-				logger.Info().Str("connectorID", connectorID).Msg("Connected successfully to WSSocks server")
+				logger.Info().Str("connectorID", connectorID).Msg("Connected successfully to LinkSocks server")
 			}
 		}
 	}
@@ -165,18 +165,18 @@ func runClient(cmd *cobra.Command, args []string) {
 	// Initialize logger with the specified debug level
 	logger := initLogging(debugCount)
 
-	// Check if both proxy and wssocks are set
-	if proxyURL != "" && wssocksToken != "" {
-		logger.Error().Msg("Cannot use both proxy (-x) and WSSocks token (-t) at the same time")
+	// Check if both proxy and linksocks are set
+	if proxyURL != "" && linksocksToken != "" {
+		logger.Error().Msg("Cannot use both proxy (-x) and LinkSocks token (-t) at the same time")
 		os.Exit(1)
 	}
 
 	var customDialer *websocket.Dialer
 	var wsocksLocalPort int
 
-	// Start WSSocks client if token is provided
-	if wssocksToken != "" {
-		logger.Info().Str("token", wssocksToken).Str("url", wssocksURL).Msg("Starting WSSocks client")
+	// Start LinkSocks client if token is provided
+	if linksocksToken != "" {
+		logger.Info().Str("token", linksocksToken).Str("url", linksocksURL).Msg("Starting LinkSocks client")
 
 		// Find a random available port on localhost
 		listener, err := net.Listen("tcp", "127.0.0.1:0")
@@ -189,24 +189,24 @@ func runClient(cmd *cobra.Command, args []string) {
 		wsocksLocalPort = listener.Addr().(*net.TCPAddr).Port
 		listener.Close()
 
-		clientOpt := wssocks.DefaultClientOption().
-			WithWSURL(wssocksURL).
+		clientOpt := linksocks.DefaultClientOption().
+			WithWSURL(linksocksURL).
 			WithSocksPort(wsocksLocalPort).
 			WithLogger(logger).
 			WithNoEnvProxy(true)
 
-		wsClient := wssocks.NewWSSocksClient(wssocksToken, clientOpt)
+		wsClient := linksocks.NewLinkSocksClient(linksocksToken, clientOpt)
 		defer wsClient.Close()
 
 		err = wsClient.WaitReady(cmd.Context(), 0)
 		if err != nil {
-			logger.Error().Err(err).Msg("Failed to connect to wssocks server")
+			logger.Error().Err(err).Msg("Failed to connect to linksocks server")
 			os.Exit(1)
 		} else {
-			logger.Info().Msg("Connected successfully to WSSocks server")
+			logger.Info().Msg("Connected successfully to LinkSocks server")
 		}
 
-		// Configure WebSocket dialer to use WSSocks SOCKS5 proxy
+		// Configure WebSocket dialer to use LinkSocks SOCKS5 proxy
 		customDialer = &websocket.Dialer{
 			Proxy: func(*http.Request) (*url.URL, error) {
 				return url.Parse(fmt.Sprintf("socks5://127.0.0.1:%d", wsocksLocalPort))

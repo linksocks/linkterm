@@ -1,4 +1,4 @@
-module github.com/zetxtech/wsterm
+module github.com/linksocks/linkterm
 
 go 1.23.0
 
@@ -7,9 +7,9 @@ toolchain go1.23.8
 require (
 	github.com/creack/pty v1.1.24
 	github.com/gorilla/websocket v1.5.3
+	github.com/linksocks/linksocks v1.7.1
 	github.com/rs/zerolog v1.33.0
 	github.com/spf13/cobra v1.9.1
-	github.com/zetxtech/wssocks v1.6.4
 	golang.org/x/term v0.31.0
 )
 

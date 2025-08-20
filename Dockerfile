@@ -14,7 +14,7 @@ RUN go mod download
 COPY . .
 
 # Build the binary
-RUN CGO_ENABLED=0 go build -o wsterm ./cmd/wsterm
+RUN CGO_ENABLED=0 go build -o linkterm ./cmd/linkterm
 
 # Final stage
 FROM alpine:3.19
@@ -22,12 +22,12 @@ FROM alpine:3.19
 WORKDIR /app
 
 # Copy binary from builder
-COPY --from=builder /build/wsterm /app/
+COPY --from=builder /build/linkterm /app/
 
 # Create non-root user
-RUN adduser -D -H -h /app wsterm && \
-    chown -R wsterm:wsterm /app
+RUN adduser -D -H -h /app linkterm && \
+    chown -R linkterm:linkterm /app
 
-USER wsterm
+USER linkterm
 
-ENTRYPOINT ["/app/wsterm"]
+ENTRYPOINT ["/app/linkterm"]

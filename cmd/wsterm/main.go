@@ -1,9 +1,9 @@
 package main
 
 import (
-	"github.com/zetxtech/wsterm/wsterm"
+	"github.com/linksocks/linkterm/linkterm"
 )
 
 func main() {
-	wsterm.RunCLI()
+	linkterm.RunCLI()
 }

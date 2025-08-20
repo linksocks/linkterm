@@ -1,4 +1,4 @@
-package wsterm
+package linkterm
 
 import (
 	"fmt"

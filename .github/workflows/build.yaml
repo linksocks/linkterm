@@ -58,9 +58,9 @@ jobs:
           GOARCH: ${{ matrix.arch }}
           CGO_ENABLED: 0
         run: |
-          go build -o "wsterm-${{ matrix.os }}-${{ matrix.arch }}${{ matrix.extension }}" cmd/wsterm/main.go
+          go build -o "linkterm-${{ matrix.os }}-${{ matrix.arch }}${{ matrix.extension }}" cmd/linkterm/main.go
 
       - name: Upload Release Asset
         uses: softprops/action-gh-release@v1
         with:
-          files: wsterm-${{ matrix.os }}-${{ matrix.arch }}${{ matrix.extension }}
+          files: linkterm-${{ matrix.os }}-${{ matrix.arch }}${{ matrix.extension }}
