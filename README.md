@@ -6,7 +6,47 @@ A powerful WebSocket-based terminal sharing tool that allows you to securely exp
 
 - Server mode: Expose your shell securely to clients through WebSockets
 - Client mode: Connect to remote terminals with interactive access
-- Intranet penetration via LinkSocks: Share terminals through firewalls/NAT using secure tunneling
+- Intranet penetration via [LinkSocks](https://github.com/linksocks/linksocks): Share terminals through firewalls/NAT using secure tunneling
+
+## Quick Start
+
+Share your terminal through any network/firewall:
+
+```bash
+# On the server (machine sharing the terminal):
+linkterm server -t YOUR_TOKEN
+
+# On the client (machine accessing the terminal):
+linkterm client -t YOUR_TOKEN
+```
+
+This method works everywhere - no port forwarding or firewall configuration needed!
+
+The connection is proxied via our public server: https://linksocks.zetx.tech. You can also host your Linksocks server: [linksocks/linksocks.js](https://github.com/linksocks/linksocks.js)
+
+You should use a complex token, as anyone holding the token can connect to your terminal.
+
+```bash
+openssl rand -hex 16
+```
+
+## Direct Connection Mode
+
+For local network or when you have direct access:
+
+Server:
+
+```bash
+# Host server at 8080
+./linkterm server --port 8080 --host localhost
+```
+
+Client:
+
+```bash
+# Connect to local server
+./linkterm client --url ws://localhost:8080
+```
 
 ## Installation
 
@@ -22,60 +62,6 @@ LinkTerm is also available via Docker:
 
 ```bash
 docker run --rm -it jackzzs/linkterm --help
-```
-
-## Usage
-
-The application supports both direct connections and tunneled connections through LinkSocks:
-
-### Quick Start with LinkSocks (Recommended)
-
-Share your terminal through any network/firewall:
-
-```bash
-# On the server (machine sharing the terminal):
-linkterm server -t YOUR_TOKEN
-
-# On the client (machine accessing the terminal):
-linkterm client -t YOUR_TOKEN
-```
-
-This method works everywhere - no port forwarding or firewall configuration needed!
-
-You should use a complex token, as anyone holding the token can connect to your terminal.
-
-```bash
-openssl rand -hex 16
-```
-
-### Direct Connection Mode
-
-For local network or when you have direct access:
-
-#### Server Mode
-
-```bash
-# Basic usage
-./linkterm server --port 8080 --host localhost
-
-# Accept connections from any interface
-./linkterm server --port 8080 --host 0.0.0.0
-
-# Specify a custom shell
-./linkterm server --shell /bin/zsh
-```
-
-#### Client Mode
-
-```bash
-# Connect to local server
-./linkterm client --url ws://localhost:8080
-
-# Connect to remote server
-./linkterm client --url ws://example.com:8080
-
-# Use with proxy
-./linkterm client --proxy socks5://proxy.example.com:1080
 ```
 
 ## License
