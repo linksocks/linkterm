@@ -16,7 +16,7 @@ linkterm client -t YOUR_TOKEN
 
 This method works everywhere - no port forwarding or firewall configuration needed!
 
-The connection is proxied via our public server: https://linksocks.zetx.tech. You can also host your Linksocks server: [linksocks/linksocks.js](https://github.com/linksocks/linksocks.js)
+The connection is proxied via our public server: https://linksocks.zetx.tech. You can also host your Linksocks server on Cloudflare Workers: [linksocks/linksocks.js](https://github.com/linksocks/linksocks.js)
 
 You should use a complex token, as anyone holding the token can connect to your terminal.
 
