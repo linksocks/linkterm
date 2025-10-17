@@ -16,13 +16,13 @@ linkterm client -t YOUR_TOKEN
 
 This method works everywhere - no port forwarding or firewall configuration needed!
 
-The connection is proxied via our public server: https://linksocks.zetx.tech using [Linksocks](https://github.com/linksocks/linksocks). You can also host your Linksocks server on Cloudflare Workers: [linksocks/linksocks.js](https://github.com/linksocks/linksocks.js)
-
 You should use a complex token, as anyone holding the token can connect to your terminal.
 
 ```bash
 openssl rand -hex 16
 ```
+
+The connection is proxied via our public server: https://linksocks.zetx.tech using [Linksocks](https://github.com/linksocks/linksocks). You can also host your Linksocks server on Cloudflare Workers: [linksocks/linksocks.js](https://github.com/linksocks/linksocks.js)
 
 ## Direct Connection Mode
 
