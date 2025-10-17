@@ -2,12 +2,6 @@
 
 A powerful WebSocket-based terminal sharing tool that allows you to securely expose and share your terminal (TTY) over any network, even through firewalls and NATs.
 
-## Features
-
-- Server mode: Expose your shell securely to clients through WebSockets
-- Client mode: Connect to remote terminals with interactive access
-- Intranet penetration via [LinkSocks](https://github.com/linksocks/linksocks): Share terminals through firewalls/NAT using secure tunneling
-
 ## Quick Start
 
 Share your terminal through any network/firewall:
