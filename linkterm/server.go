@@ -13,7 +13,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/creack/pty"
 	"github.com/gorilla/websocket"
 	"github.com/rs/zerolog"
 )
@@ -62,7 +61,7 @@ func (s *Server) Start() error {
 	http.HandleFunc("/terminal", s.handleTerminal)
 
 	addr := fmt.Sprintf("%s:%d", s.Host, s.Port)
-	s.logger.Info().Str("addr", addr).Msg("Started WebSocket terminal server")
+	s.logger.Info().Int("port", s.Port).Msg("Started WebSocket terminal server")
 	return http.ListenAndServe(addr, nil)
 }
 
@@ -119,52 +118,55 @@ func (s *Server) handleTerminal(w http.ResponseWriter, r *http.Request) {
 	cmd := exec.Command(s.ShellPath, s.ShellArgs...)
 	cmd.Env = os.Environ()
 
-	// Start the command with a pty
-	ptmx, err := pty.Start(cmd)
+	// Start the command attached to a pseudo-terminal
+	term, err := startTerminal(cmd)
 	if err != nil {
-		s.logger.Error().Str("clientIP", clientIP).Err(err).Msg("Error starting pty")
+		s.logger.Error().Str("clientIP", clientIP).Err(err).Msg("Error starting terminal")
 		return
 	}
 
 	// Create a clean shutdown function
+	var closeOnce sync.Once
 	closeSession := func() {
-		ptmx.Close()
-		// Send terminal process termination signal
-		if cmd.Process != nil {
-			cmd.Process.Signal(syscall.SIGTERM)
-			// Wait for process to exit or force kill after a brief period
-			done := make(chan struct{})
-			go func() {
-				cmd.Wait()
-				close(done)
-			}()
+		closeOnce.Do(func() {
+			term.Close()
+			// Send terminal process termination signal
+			if cmd.Process != nil {
+				cmd.Process.Signal(syscall.SIGTERM)
+				// Wait for process to exit or force kill after a brief period
+				done := make(chan struct{})
+				go func() {
+					cmd.Wait()
+					close(done)
+				}()
 
-			select {
-			case <-done:
-				// Process exited cleanly
-			case <-time.After(time.Second):
-				// Force kill if it doesn't respond
-				cmd.Process.Kill()
+				select {
+				case <-done:
+					// Process exited cleanly
+				case <-time.After(time.Second):
+					// Force kill if it doesn't respond
+					cmd.Process.Kill()
+				}
 			}
-		}
 
-		// Calculate session duration
-		duration := time.Since(startTime)
-		hours := int(duration.Hours())
-		minutes := int(duration.Minutes()) % 60
-		seconds := int(duration.Seconds()) % 60
+			// Calculate session duration
+			duration := time.Since(startTime)
+			hours := int(duration.Hours())
+			minutes := int(duration.Minutes()) % 60
+			seconds := int(duration.Seconds()) % 60
 
-		// Format duration string
-		var durationStr string
-		if hours > 0 {
-			durationStr = fmt.Sprintf("%d hours, %d minutes, %d seconds", hours, minutes, seconds)
-		} else if minutes > 0 {
-			durationStr = fmt.Sprintf("%d minutes, %d seconds", minutes, seconds)
-		} else {
-			durationStr = fmt.Sprintf("%d seconds", seconds)
-		}
+			// Format duration string
+			var durationStr string
+			if hours > 0 {
+				durationStr = fmt.Sprintf("%d hours, %d minutes, %d seconds", hours, minutes, seconds)
+			} else if minutes > 0 {
+				durationStr = fmt.Sprintf("%d minutes, %d seconds", minutes, seconds)
+			} else {
+				durationStr = fmt.Sprintf("%d seconds", seconds)
+			}
 
-		s.logger.Info().Str("clientIP", clientIP).Str("duration", durationStr).Msg("Session ended")
+			s.logger.Info().Str("clientIP", clientIP).Str("duration", durationStr).Msg("Session ended")
+		})
 	}
 	defer closeSession()
 
@@ -188,6 +190,7 @@ func (s *Server) handleTerminal(w http.ResponseWriter, r *http.Request) {
 					}
 					isClosing = true
 				}
+				closeSession()
 				return
 			}
 
@@ -200,17 +203,14 @@ func (s *Server) handleTerminal(w http.ResponseWriter, r *http.Request) {
 						rows, err2 := strconv.Atoi(parts[1])
 
 						if err1 == nil && err2 == nil && cols > 0 && rows > 0 {
-							if err := pty.Setsize(ptmx, &pty.Winsize{
-								Cols: uint16(cols),
-								Rows: uint16(rows),
-							}); err != nil {
-								s.logger.Error().Err(err).Msg("Error resizing pty")
+							if err := term.Resize(uint16(cols), uint16(rows)); err != nil {
+								s.logger.Error().Err(err).Msg("Error resizing terminal")
 							}
 						}
 					}
 				} else {
 					// Write input to the PTY
-					_, _ = ptmx.Write(p)
+					_, _ = term.Write(p)
 				}
 			}
 		}
@@ -223,7 +223,7 @@ func (s *Server) handleTerminal(w http.ResponseWriter, r *http.Request) {
 		defer wg.Done()
 		buf := make([]byte, 1024)
 		for {
-			n, err := ptmx.Read(buf)
+			n, err := term.Read(buf)
 			if err != nil {
 				if err != io.EOF && !isClosing && !strings.Contains(err.Error(), "input/output error") {
 					s.logger.Error().Err(err).Msg("Error reading from PTY")
@@ -244,12 +244,13 @@ func (s *Server) handleTerminal(w http.ResponseWriter, r *http.Request) {
 
 	// Wait for the process to end
 	go func() {
-		cmd.Wait()
+		term.Wait()
 		// Gracefully close the WebSocket connection when the terminal exits
 		closeMsg := websocket.FormatCloseMessage(websocket.CloseNormalClosure, "Terminal session ended")
 		// Ignore errors during close, as the connection might already be gone
 		conn.WriteMessage(websocket.CloseMessage, closeMsg)
 		isClosing = true
+		closeSession()
 	}()
 
 	wg.Wait()

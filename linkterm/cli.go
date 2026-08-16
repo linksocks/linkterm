@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"runtime"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -112,8 +113,10 @@ func runServer(cmd *cobra.Command, args []string) {
 		// Try to detect the default shell
 		shellPath = os.Getenv("SHELL")
 		if shellPath == "" {
-			// Default to bash if $SHELL is not set
-			if _, err := exec.LookPath("bash"); err == nil {
+			if runtime.GOOS == "windows" {
+				// Fall back to cmd.exe on Windows
+				shellPath = "cmd.exe"
+			} else if _, err := exec.LookPath("bash"); err == nil {
 				shellPath = "bash"
 			} else if _, err := exec.LookPath("sh"); err == nil {
 				shellPath = "sh"
@@ -133,6 +136,10 @@ func runServer(cmd *cobra.Command, args []string) {
 		clientOpt := linksocks.DefaultClientOption().
 			WithWSURL(linksocksURL).
 			WithReverse(true).
+			WithSocksHost("127.0.0.1").
+			WithSocksPort(0).
+			WithSocksWaitServer(true).
+			WithReconnect(true).
 			WithLogger(logger)
 
 		wsClient := linksocks.NewLinkSocksClient(linksocksToken, clientOpt)
@@ -153,7 +160,7 @@ func runServer(cmd *cobra.Command, args []string) {
 		}
 	}
 
-	logger.Info().Str("host", serverHost).Int("port", serverPort).Str("shell", shellPath).Msg("Starting terminal server")
+	logger.Info().Int("port", serverPort).Str("shell", shellPath).Msg("Starting terminal server")
 	if err := server.Start(); err != nil {
 		logger.Error().Err(err).Msg("Server error")
 		os.Exit(1)
@@ -190,7 +197,10 @@ func runClient(cmd *cobra.Command, args []string) {
 
 		clientOpt := linksocks.DefaultClientOption().
 			WithWSURL(linksocksURL).
+			WithSocksHost("127.0.0.1").
 			WithSocksPort(wsocksLocalPort).
+			WithSocksWaitServer(true).
+			WithReconnect(true).
 			WithLogger(logger)
 
 		wsClient := linksocks.NewLinkSocksClient(linksocksToken, clientOpt)

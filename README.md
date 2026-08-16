@@ -1,6 +1,6 @@
 # LinkTerm
 
-A powerful WebSocket-based terminal sharing tool that allows you to securely expose and share your terminal (TTY) over any network, even through firewalls and NATs.
+A powerful WebSocket-based terminal sharing tool that allows you to securely expose and share your terminal (TTY) over any network, even through firewalls and NATs. The server runs on Linux, macOS, Windows (via ConPTY), FreeBSD and other Unix-like systems.
 
 ## Quick Start
 
