@@ -86,13 +86,13 @@ func RunCLI() {
 	serverCmd.Flags().StringVarP(&shellPath, "shell", "s", "", "Shell to use")
 	serverCmd.Flags().CountVarP(&debugCount, "debug", "d", "Debug level (-d=debug, -dd=trace)")
 	serverCmd.Flags().StringVarP(&linksocksToken, "token", "t", "", "LinkSocks token for intranet penetration")
-	serverCmd.Flags().StringVarP(&linksocksURL, "linksocks-url", "U", "https://linksocks.zetx.tech", "LinkSocks server URL")
+	serverCmd.Flags().StringVarP(&linksocksURL, "linksocks-url", "U", "https://l.zetx.tech", "LinkSocks server URL")
 
 	// Add flags to client command
 	clientCmd.Flags().StringVarP(&clientURL, "url", "u", "ws://localhost:8080", "URL to connect to (e.g. example.com or ws://example.com:8080/terminal)")
 	clientCmd.Flags().CountVarP(&debugCount, "debug", "d", "Debug level (-d=debug, -dd=trace)")
 	clientCmd.Flags().StringVarP(&linksocksToken, "token", "t", "", "LinkSocks token for intranet penetration")
-	clientCmd.Flags().StringVarP(&linksocksURL, "linksocks-url", "U", "https://linksocks.zetx.tech", "LinkSocks server URL")
+	clientCmd.Flags().StringVarP(&linksocksURL, "linksocks-url", "U", "https://l.zetx.tech", "LinkSocks server URL")
 	clientCmd.Flags().StringVarP(&proxyURL, "proxy", "x", "", "Proxy URL (e.g. socks5://user:pass@host:port or http://user:pass@host:port)")
 
 	// Add commands to root command
