@@ -89,7 +89,6 @@ type tui struct {
 	connected bool
 	status    string
 	latency   time.Duration
-	fatalErr  error
 
 	showLogs  bool
 	logScroll int
@@ -97,16 +96,6 @@ type tui struct {
 
 func newTUI(target string, dialer *websocket.Dialer, rttFn func() time.Duration) *tui {
 	return &tui{url: target, dialer: dialer, rttFn: rttFn, ring: newLogRing(3000), done: make(chan struct{})}
-}
-
-// setFatal records a fatal connection error; the TUI then renders an error
-// screen (details in the F2 log panel) instead of trying to dial again.
-func (t *tui) setFatal(err error) {
-	t.mu.Lock()
-	t.fatalErr = err
-	t.status = "Connection failed"
-	t.mu.Unlock()
-	t.ring.Logf("connection failed: %v", err)
 }
 
 // Run runs the TUI; it owns stdin/stdout via tcell until it exits.
@@ -123,12 +112,8 @@ func (t *tui) Run() error {
 	s.EnableMouse(tcell.MouseButtonEvents)
 	s.Clear()
 
-	// Skip dial when a fatal error was already recorded (e.g. link relay
-	// unreachable). The TUI will render the error screen instead.
-	if t.fatalErr == nil {
-		if err := t.dial(); err != nil {
-			t.setFatal(err)
-		}
+	if err := t.dial(); err != nil {
+		return err
 	}
 
 	stopTick := make(chan struct{})
@@ -414,9 +399,7 @@ func (t *tui) draw() {
 	w, h := t.screen.Size()
 	t.screen.Fill(' ', tcell.StyleDefault)
 
-	if t.fatalErr != nil {
-		t.drawError(w, h-1)
-	} else if t.showLogs {
+	if t.showLogs {
 		// fullscreen log panel above the status bar
 		t.drawLogs(w, 0, h-1)
 	} else {
@@ -435,50 +418,6 @@ func (t *tui) draw() {
 	t.screen.Show()
 }
 
-// drawError renders a centered error screen shown when the initial connection
-// failed (link relay unreachable, etc.). Details are in the F2 log panel.
-func (t *tui) drawError(w, h int) {
-	if t.fatalErr == nil {
-		return
-	}
-	title := "Connection failed"
-	body := wrapText(t.fatalErr.Error(), w-6)
-	hint := "Press F2 to view logs, F3 to quit"
-
-	borderStyle := tcell.StyleDefault.Foreground(tcell.ColorRed)
-	titleStyle := tcell.StyleDefault.Foreground(tcell.ColorRed).Bold(true)
-	bodyStyle := tcell.StyleDefault.Foreground(tcell.ColorSilver)
-	hintStyle := tcell.StyleDefault.Foreground(tcell.ColorSilver)
-
-	// title at ~1/3 height, body below, hint at the bottom area
-	titleY := h / 3
-	if titleY < 1 {
-		titleY = 1
-	}
-	for i, r := range title {
-		if titleY >= 0 && titleY < h {
-			t.screen.SetContent(w/2-len([]rune(title))/2+i, titleY, r, nil, titleStyle)
-		}
-	}
-	// draw a line under the title
-	if titleY+1 < h {
-		for x := w / 4; x < 3*w/4; x++ {
-			t.screen.SetContent(x, titleY+1, '─', nil, borderStyle)
-		}
-	}
-	for i, ln := range body {
-		y := titleY + 3 + i
-		if y >= h {
-			break
-		}
-		t.putLine(3, y, w-6, ln, bodyStyle)
-	}
-	hy := h - 2
-	if hy >= 0 {
-		t.putLine(3, hy, w-6, hint, hintStyle)
-	}
-}
-
 func (t *tui) drawLogs(w, y, count int) {
 	lines := t.ring.snapshot()
 	style := tcell.StyleDefault.Foreground(tcell.ColorSilver)
@@ -491,23 +430,6 @@ func (t *tui) drawLogs(w, y, count int) {
 	for i := 0; i < count && start+i < len(lines); i++ {
 		t.putLine(0, y+i, w, lines[start+i], style)
 	}
-}
-
-// wrapText wraps s (splitting on newlines and width) into rune-safe lines.
-func wrapText(s string, width int) []string {
-	if width <= 0 {
-		width = 1
-	}
-	var out []string
-	for _, seg := range strings.Split(s, "\n") {
-		runes := []rune(seg)
-		for len(runes) > width {
-			out = append(out, string(runes[:width]))
-			runes = runes[width:]
-		}
-		out = append(out, string(runes))
-	}
-	return out
 }
 
 // putLine renders text into a single screen row with the given style.

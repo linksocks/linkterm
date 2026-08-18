@@ -355,14 +355,7 @@ func runClient(cmd *cobra.Command, args []string) {
 
 		err = wsClient.WaitReady(cmd.Context(), 0)
 		if err != nil {
-			// The error already went to the console (or the TUI log panel via
-			// the re-wired logger). In TUI mode keep the screen up so the user
-			// can read the logs in F2; otherwise fail with a clear message.
 			logger.Error().Err(err).Msg("Failed to connect to link relay")
-			if tUI != nil {
-				tUI.setFatal(fmt.Errorf("link relay: %w", err))
-				goto tuiStart
-			}
 			os.Exit(1)
 		}
 		logger.Info().Msg("Connected successfully to LinkSocks server")
@@ -396,7 +389,6 @@ func runClient(cmd *cobra.Command, args []string) {
 		termClient.SetCustomDialer(customDialer)
 	}
 
-tuiStart:
 	if tuiMode {
 		// tmux-like TUI: content area renders the remote terminal, the
 		// bottom status bar shows host / latency, F2 toggles the log panel.
