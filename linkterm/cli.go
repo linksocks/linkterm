@@ -9,7 +9,6 @@ import (
 	"os"
 	"os/exec"
 	"runtime"
-	"strings"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -150,12 +149,15 @@ func runServer(cmd *cobra.Command, args []string) {
 }
 
 // runTunnel maintains the reverse LinkSocks tunnel across reconnects.
-// It starts with the configured token (usually "anonymous"), remembers the
-// token assigned by the server, and reconnects with it first so the same
-// relay is reused within the server's grace period. If that fails the relay
-// was garbage-collected, so it falls back to a fresh anonymous connection.
+//
+// The -t / --token value is the connector token that clients use to reach
+// this relay. It is NOT used as the provider dial token. We always dial as
+// an anonymous provider so the relay assigns a fresh identity, and reconnect
+// with that returned token to keep the same relay. The connector token is
+// mounted via AddConnector once per relay session; replayConnectorTokens
+// handles re-mounting automatically after reconnect.
 func runTunnel(ctx context.Context, token string, logger zerolog.Logger) {
-	currentToken := token
+	currentToken := "anonymous"
 	var connectorToken string
 
 	for {
@@ -177,12 +179,8 @@ func runTunnel(ctx context.Context, token string, logger zerolog.Logger) {
 		if err != nil {
 			wsClient.Close()
 			if currentToken != "anonymous" {
-				// Either the user-supplied token was rejected, or the token
-				// previously assigned by the relay no longer works (relay was
-				// garbage-collected or tombstoned). Fall back to a fresh
-				// anonymous provider so the tunnel stays up with a new relay.
 				logger.Warn().Err(err).Str("token", currentToken).
-					Msg("LinkSocks connect with token failed, falling back to anonymous")
+					Msg("LinkSocks reconnect with server token failed, falling back to anonymous")
 				currentToken = "anonymous"
 				continue
 			}
@@ -200,25 +198,36 @@ func runTunnel(ctx context.Context, token string, logger zerolog.Logger) {
 			logger.Info().Str("serverToken", serverToken).Msg("LinkSocks server assigned a relay token")
 		}
 
-		// Reuse the same connector token across reconnects: it stays valid
-		// while the relay is unchanged, and re-registering it on the same
-		// relay is idempotent.
-		connectorID, err := registerConnector(wsClient, connectorToken, logger)
-		if err != nil {
-			logger.Error().Err(err).Msg("Failed to add connector token")
-			wsClient.Close()
-			if strings.Contains(strings.ToLower(err.Error()), "already exists") {
-				// The connector token is bound to another relay, so use a fresh one
-				connectorToken = ""
+		// Mount the connector token (once per relay session).
+		// replayConnectorTokens handles re-mounting after reconnect.
+		if connectorToken == "" {
+			mount := ""
+			if token != "anonymous" {
+				mount = token
 			}
-			if !sleepCtx(ctx, 5*time.Second) {
-				return
+			cid, err := registerConnector(wsClient, mount, logger)
+			if err != nil {
+				// If the user-specified token was rejected (weak, too short,
+				// or already taken), fall back to a server-generated random one.
+				if mount != "" {
+					logger.Warn().Err(err).Str("token", mount).
+						Msg("Requested connector token rejected, retrying with random")
+					mount = ""
+					cid, err = registerConnector(wsClient, mount, logger)
+				}
+				if err != nil {
+					logger.Error().Err(err).Msg("Failed to add connector token")
+					wsClient.Close()
+					if !sleepCtx(ctx, 5*time.Second) {
+						return
+					}
+					continue
+				}
 			}
-			continue
+			connectorToken = cid
 		}
-		connectorToken = connectorID
 
-		logger.Info().Str("connectorID", connectorID).Msg("Connected successfully to LinkSocks server")
+		logger.Info().Str("connectorID", connectorToken).Msg("Connected successfully to LinkSocks server")
 
 		// Wait for the connection to drop, then reconnect
 		disconnected := wsClient.DisconnectedChan()
