@@ -3,12 +3,14 @@ package linkterm
 import (
 	"context"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/url"
 	"os"
 	"os/exec"
 	"runtime"
+	"strings"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -52,14 +54,32 @@ func initLogging(debug int) zerolog.Logger {
 		zerolog.SetGlobalLevel(zerolog.TraceLevel)
 	}
 
-	// Create synchronized console writer
+	// Create synchronized console writer (silences noisy library info lines)
 	output := zerolog.ConsoleWriter{
 		Out:        zerolog.SyncWriter(os.Stdout),
 		TimeFormat: time.RFC3339,
 	}
 
 	// Return configured logger
-	return zerolog.New(output).With().Timestamp().Logger()
+	return zerolog.New(quietWriter{output}).With().Timestamp().Logger()
+}
+
+// quietWriter drops noisy info-level library messages from the logger output.
+// It wraps the final io.Writer, so it filters on ConsoleWriter-formatted text.
+// Use -d/-dd to see all messages unfiltered (Debug/Trace bypass the filter).
+type quietWriter struct {
+	inner io.Writer
+}
+
+func (w quietWriter) Write(p []byte) (int, error) {
+	s := string(p)
+	if strings.Contains(s, "is connecting to") ||
+		strings.Contains(s, "Using proxy from environment") ||
+		strings.Contains(s, "Welcome to LinkSocks.js") ||
+		strings.Contains(s, "Server ready, latency") {
+		return len(p), nil // drop
+	}
+	return w.inner.Write(p)
 }
 
 // RunCLI runs the command line interface for the terminal server and client
@@ -143,11 +163,20 @@ func runServer(cmd *cobra.Command, args []string) {
 		tunnelToken = "anonymous"
 	}
 	logger.Info().Str("url", linksocksURL).Str("token", tunnelToken).Msg("Starting LinkSocks connection")
-	go runTunnel(cmd.Context(), tunnelToken, logger)
 
-	logger.Info().Int("port", serverPort).Str("shell", shellPath).Msg("Starting terminal server")
-	if err := server.Start(); err != nil {
-		logger.Error().Err(err).Msg("Server error")
+	errCh := make(chan error, 2)
+	go func() {
+		if err := runTunnel(cmd.Context(), tunnelToken, logger); err != nil {
+			errCh <- err
+		}
+	}()
+	go func() {
+		if err := server.Start(); err != nil {
+			errCh <- err
+		}
+	}()
+	if err := <-errCh; err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
 }
@@ -160,13 +189,16 @@ func runServer(cmd *cobra.Command, args []string) {
 // with that returned token to keep the same relay. The connector token is
 // mounted via AddConnector once per relay session; replayConnectorTokens
 // handles re-mounting automatically after reconnect.
-func runTunnel(ctx context.Context, token string, logger zerolog.Logger) {
+//
+// Returns nil on clean shutdown (ctx cancelled), or a fatal error when the
+// user-specified connector token is rejected by the relay.
+func runTunnel(ctx context.Context, token string, logger zerolog.Logger) error {
 	currentToken := "anonymous"
 	var connectorToken string
 
 	for {
 		if ctx.Err() != nil {
-			return
+			return nil
 		}
 
 		clientOpt := linksocks.DefaultClientOption().
@@ -190,7 +222,7 @@ func runTunnel(ctx context.Context, token string, logger zerolog.Logger) {
 			}
 			logger.Warn().Err(err).Msg("LinkSocks connection failed, retrying in 5s")
 			if !sleepCtx(ctx, 5*time.Second) {
-				return
+				return nil
 			}
 			continue
 		}
@@ -211,22 +243,22 @@ func runTunnel(ctx context.Context, token string, logger zerolog.Logger) {
 			}
 			cid, err := registerConnector(wsClient, mount, logger)
 			if err != nil {
-				// If the user-specified token was rejected (weak, too short,
-				// or already taken), fall back to a server-generated random one.
+				// If the user explicitly requested a connector token and it was
+				// rejected, the tunnel cannot work with the intended identity.
+				// Fail fast so the user knows to use a stronger token.
 				if mount != "" {
-					logger.Warn().Err(err).Str("token", mount).
-						Msg("Requested connector token rejected, retrying with random")
-					mount = ""
-					cid, err = registerConnector(wsClient, mount, logger)
-				}
-				if err != nil {
-					logger.Error().Err(err).Msg("Failed to add connector token")
+					logger.Error().Err(err).Str("token", mount).
+						Msg("Connector token rejected by the relay; use a stronger token (at least 8 characters, not too simple)")
 					wsClient.Close()
-					if !sleepCtx(ctx, 5*time.Second) {
-						return
-					}
-					continue
+					return fmt.Errorf("connector token %q rejected: %w", mount, err)
 				}
+				// mount == "" (random): should never fail, but retry if it does.
+				logger.Error().Err(err).Msg("Failed to add connector token")
+				wsClient.Close()
+				if !sleepCtx(ctx, 5*time.Second) {
+					return nil
+				}
+				continue
 			}
 			connectorToken = cid
 		}
@@ -240,7 +272,7 @@ func runTunnel(ctx context.Context, token string, logger zerolog.Logger) {
 			logger.Warn().Msg("LinkSocks connection lost, reconnecting")
 		case <-ctx.Done():
 			wsClient.Close()
-			return
+			return nil
 		}
 		wsClient.Close()
 	}
@@ -281,6 +313,20 @@ func runClient(cmd *cobra.Command, args []string) {
 	// rttFn reports the link RTT when connected via linksocks; nil otherwise.
 	var rttFn func() time.Duration
 
+	// Build termClient early for URL processing.
+	termClient := NewClient(clientURL)
+
+	// If TUI mode, create the TUI early so the log ring is ready before any
+	// wsClient is created — this way all linksocks logs land in the panel.
+	var tUI *tui
+	if tuiMode {
+		tUI = newTUI(termClient.URL, nil, nil) // dialer/rttFn filled later
+		level := logger.GetLevel()
+		logger = zerolog.New(quietWriter{zerolog.ConsoleWriter{
+			Out: tUI.ring, NoColor: true, TimeFormat: time.RFC3339,
+		}}).Level(level).With().Timestamp().Logger()
+	}
+
 	// Start LinkSocks client if token is provided
 	if linksocksToken != "" {
 		logger.Info().Str("token", linksocksToken).Str("url", linksocksURL).Msg("Starting LinkSocks client")
@@ -309,11 +355,17 @@ func runClient(cmd *cobra.Command, args []string) {
 
 		err = wsClient.WaitReady(cmd.Context(), 0)
 		if err != nil {
-			logger.Error().Err(err).Msg("Failed to connect to linksocks server")
+			// The error already went to the console (or the TUI log panel via
+			// the re-wired logger). In TUI mode keep the screen up so the user
+			// can read the logs in F2; otherwise fail with a clear message.
+			logger.Error().Err(err).Msg("Failed to connect to link relay")
+			if tUI != nil {
+				tUI.setFatal(fmt.Errorf("link relay: %w", err))
+				goto tuiStart
+			}
 			os.Exit(1)
-		} else {
-			logger.Info().Msg("Connected successfully to LinkSocks server")
 		}
+		logger.Info().Msg("Connected successfully to LinkSocks server")
 		rttFn = wsClient.GetRTT
 
 		// Configure WebSocket dialer to use LinkSocks SOCKS5 proxy
@@ -339,25 +391,21 @@ func runClient(cmd *cobra.Command, args []string) {
 		}
 	}
 
-	termClient := NewClient(clientURL)
 	termClient.SetLogger(logger)
 	if customDialer != nil {
 		termClient.SetCustomDialer(customDialer)
 	}
 
+tuiStart:
 	if tuiMode {
 		// tmux-like TUI: content area renders the remote terminal, the
 		// bottom status bar shows host / latency, F2 toggles the log panel.
-		t := newTUI(termClient.URL, customDialer, rttFn)
-		// route all logs into the TUI log panel instead of stdout (stdout is
-		// owned by the TUI here).
-		level := logger.GetLevel()
-		logger = zerolog.New(zerolog.ConsoleWriter{
-			Out: t.ring, NoColor: true, TimeFormat: time.RFC3339,
-		}).Level(level).With().Timestamp().Logger()
-		t.ring.Logf("LinkTerm TUI — connecting to %s", termClient.URL)
-		if err := t.Run(); err != nil {
-			logger.Error().Err(err).Msg("TUI error")
+		tUI.dialer = customDialer
+		tUI.rttFn = rttFn
+		tUI.ring.Logf("LinkTerm TUI — connecting to %s", termClient.URL)
+		if err := tUI.Run(); err != nil {
+			// TUI already Fini'd; print to stderr
+			fmt.Fprintf(os.Stderr, "TUI error: %v\n", err)
 			os.Exit(1)
 		}
 		return

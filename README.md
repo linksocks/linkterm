@@ -100,7 +100,15 @@ Keys:
 | `Esc` / `g` (while rewound) | jump back to the live screen |
 
 All other keys are forwarded to the remote terminal as usual. In the TUI,
-logs are routed into the log panel instead of stdout.
+logs are routed into the log panel instead of stdout. If the initial
+connection fails (e.g. the link relay rejects the token), the TUI shows an
+error screen with the reason and the full details are available in the F2
+log panel — press `F3` to quit.
+
+Note: a connector token is validated by the relay (at least 8 characters and
+not a trivial pattern like `abc123`). If you pass an explicit weak `-t` to
+the server, it exits immediately with an error instead of silently swapping
+in a random token, so the client can never end up with a mismatched identity.
 
 ## Installation
 
