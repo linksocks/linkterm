@@ -71,12 +71,18 @@ Client:
 
 ## TUI Client (tmux-like)
 
-`--tui` switches the client to a full-screen terminal UI, similar to tmux:
-a content area renders the remote terminal, a bottom status bar shows the
-connected host and current latency, and a log panel can be toggled open.
+The client uses a full-screen terminal UI by default (similar to tmux) when
+stdout is a terminal: a content area renders the remote terminal, a bottom
+status bar shows the host, latency and relay state, and a log panel can be
+toggled open. Use `--no-tui` to force the plain console mode (this also
+happens automatically when stdout is not a terminal, e.g. in a pipe).
 
 ```bash
-./linkterm client --tui --url ws://localhost:8080
+# default: TUI on a terminal
+./linkterm client --url ws://localhost:8080
+
+# plain console mode
+./linkterm client --no-tui --url ws://localhost:8080
 ```
 
 Layout (top to bottom):
@@ -86,21 +92,33 @@ Layout (top to bottom):
 |  content area: the remote terminal          |
 |  or the fullscreen log panel (F2 toggles)   |
 +---------------------------------------------+
-|  ● host  |  Latency 12ms  |  F2 Logs F3 Quit |
+|  ● host | Latency 12ms |  F2 Logs F3 Quit   |
 +---------------------------------------------+
 ```
+
+The status bar shows (left to right) a connection dot, the remote host, the
+link latency, and the clickable hotkey hints. The dot is green when connected,
+amber while reconnecting, and red when disconnected, in which case the host is
+followed by the relay state (`disconnected` / `reconnecting`) and the latency
+is hidden.
 
 Keys:
 
 | Key | Action |
 | --- | --- |
-| `F2` | toggle the fullscreen log panel (all linkterm logs land here) |
+| `F2` | toggle the fullscreen log panel (all client logs land here, colour-coded by level) |
 | `F3` / `Ctrl+Q` | quit the TUI |
 | mouse wheel | rewind the content scrollback; scrolls the log panel when it is open |
+| `PgUp` / `PgDn` (log panel) | scroll the log panel by one page |
 | `Esc` / `g` (while rewound) | jump back to the live screen |
 
-All other keys are forwarded to the remote terminal as usual. In the TUI,
-logs are routed into the log panel instead of stdout.
+Clicking the `F2 Logs` / `F3 Quit` text in the status bar works the same as
+pressing the keys. All other keys are forwarded to the remote terminal as
+usual; logs are routed into the log panel instead of stdout.
+
+If the terminal WebSocket drops, the TUI keeps the last screen, shows the
+disconnected status and automatically reconnects with exponential backoff,
+restoring the session when the link recovers.
 
 Note: a connector token is validated by the relay (at least 8 characters and
 not a trivial pattern like `abc123`). If you pass an explicit weak `-t` to

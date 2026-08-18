@@ -31,8 +31,8 @@ var (
 	// Client flags
 	clientURL string
 
-	// TUI flag
-	tuiMode bool
+	// TUI flags
+	tuiNoFlag bool
 
 	// LinkSocks flags
 	linksocksToken string
@@ -118,7 +118,7 @@ func RunCLI() {
 	clientCmd.Flags().StringVarP(&linksocksToken, "token", "t", "", "LinkSocks connector token from the server")
 	clientCmd.Flags().StringVarP(&linksocksURL, "linksocks-url", "U", "https://l.zetx.tech", "LinkSocks relay server URL")
 	clientCmd.Flags().StringVarP(&proxyURL, "proxy", "x", "", "Proxy URL (e.g. socks5://user:pass@host:port or http://user:pass@host:port)")
-	clientCmd.Flags().BoolVar(&tuiMode, "tui", false, "Use the tmux-like TUI client (content area + status bar + toggleable log panel)")
+	clientCmd.Flags().BoolVar(&tuiNoFlag, "no-tui", false, "Disable the TUI and run in plain console mode")
 
 	// Add commands to root command
 	rootCmd.AddCommand(serverCmd, clientCmd)
@@ -298,9 +298,21 @@ func sleepCtx(ctx context.Context, d time.Duration) bool {
 	}
 }
 
+// isTerminal returns true when f is a character device (i.e. a real terminal).
+func isTerminal(f *os.File) bool {
+	fi, err := f.Stat()
+	if err != nil {
+		return false
+	}
+	return fi.Mode()&os.ModeCharDevice != 0
+}
+
 func runClient(cmd *cobra.Command, args []string) {
 	// Initialize logger with the specified debug level
 	logger := initLogging(debugCount)
+
+	// TUI is the default; it only activates when stdout is a terminal.
+	tuiMode := !tuiNoFlag && isTerminal(os.Stdout)
 
 	// Check if both proxy and linksocks are set
 	if proxyURL != "" && linksocksToken != "" {
@@ -360,6 +372,9 @@ func runClient(cmd *cobra.Command, args []string) {
 		}
 		logger.Info().Msg("Connected successfully to LinkSocks server")
 		rttFn = wsClient.GetRTT
+		if tUI != nil {
+			tUI.relayClient = wsClient
+		}
 
 		// Configure WebSocket dialer to use LinkSocks SOCKS5 proxy
 		customDialer = &websocket.Dialer{

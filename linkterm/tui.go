@@ -92,10 +92,44 @@ type tui struct {
 
 	showLogs  bool
 	logScroll int
+
+	// relay connection monitoring
+	relayClient interface {
+		ConnectedChan() <-chan struct{}
+		DisconnectedChan() <-chan struct{}
+	}
+	relayStatus string
+	relayMu     sync.Mutex
+
+	// reconnect
+	reconnectCh chan struct{}
+
+	// clickable status bar regions (x range, set during drawStatus)
+	clickF2X, clickF3X [2]int
 }
 
 func newTUI(target string, dialer *websocket.Dialer, rttFn func() time.Duration) *tui {
-	return &tui{url: target, dialer: dialer, rttFn: rttFn, ring: newLogRing(3000), done: make(chan struct{})}
+	return &tui{
+		url:         target,
+		dialer:      dialer,
+		rttFn:       rttFn,
+		ring:        newLogRing(3000),
+		done:        make(chan struct{}),
+		reconnectCh: make(chan struct{}, 1),
+	}
+}
+
+// setRelayStatus updates the relay connection state shown in the status bar.
+func (t *tui) setRelayStatus(s string) {
+	t.relayMu.Lock()
+	t.relayStatus = s
+	t.relayMu.Unlock()
+}
+
+func (t *tui) relayStatusStr() string {
+	t.relayMu.Lock()
+	defer t.relayMu.Unlock()
+	return t.relayStatus
 }
 
 // Run runs the TUI; it owns stdin/stdout via tcell until it exits.
@@ -115,6 +149,13 @@ func (t *tui) Run() error {
 	if err := t.dial(); err != nil {
 		return err
 	}
+
+	// start background workers
+	t.setRelayStatus("connected")
+	if t.relayClient != nil {
+		go t.monitorRelay()
+	}
+	go t.reconnectLoop()
 
 	stopTick := make(chan struct{})
 	defer close(stopTick)
@@ -177,11 +218,9 @@ func (t *tui) dial() error {
 		return fmt.Errorf("connect %s: %w", t.url, err)
 	}
 	t.conn = conn
+	t.connected = true
 	t.setStatus("Connected to " + t.host())
 
-	// On a direct connection (no linksocks) we measure latency with WS pings.
-	// When a link RTT source is available (rttFn) the ping/pong result is
-	// ignored and the linksocks RTT is preferred instead.
 	conn.SetPongHandler(func(appData string) error {
 		if t.rttFn == nil {
 			if ts, err := strconv.ParseInt(appData, 10, 64); err == nil {
@@ -195,7 +234,9 @@ func (t *tui) dial() error {
 	})
 
 	w, h := t.screen.Size()
-	t.vt = newVt(w, h-1)
+	if t.vt == nil {
+		t.vt = newVt(w, h-1)
+	}
 	t.sendResize(w, h-1)
 	t.ring.Logf("connected to %s", t.host())
 	go t.readLoop()
@@ -241,6 +282,11 @@ func (t *tui) readLoop() {
 			t.connected = false
 			t.setStatus("Disconnected: " + err.Error())
 			t.ring.Logf("connection lost: %v", err)
+			// signal reconnect loop
+			select {
+			case t.reconnectCh <- struct{}{}:
+			default:
+			}
 			t.wake()
 			return
 		}
@@ -249,6 +295,62 @@ func (t *tui) readLoop() {
 			t.vt.Feed(p)
 			t.wake()
 		}
+	}
+}
+
+// reconnectLoop listens for disconnect signals and attempts to re-establish
+// the terminal WebSocket connection with exponential backoff.
+func (t *tui) reconnectLoop() {
+	backoff := 1 * time.Second
+	maxBackoff := 30 * time.Second
+	for {
+		select {
+		case <-t.done:
+			return
+		case <-t.reconnectCh:
+			t.setStatus(fmt.Sprintf("Reconnecting in %v...", backoff))
+			for {
+				select {
+				case <-t.done:
+					return
+				default:
+				}
+				t.ring.Logf("reconnecting in %v...", backoff)
+				time.Sleep(backoff)
+				if err := t.dial(); err != nil {
+					backoff *= 2
+					if backoff > maxBackoff {
+						backoff = maxBackoff
+					}
+					continue
+				}
+				t.ring.Logf("reconnected successfully")
+				backoff = 1 * time.Second
+				break
+			}
+		}
+	}
+}
+
+// monitorRelay watches the link relay connection state (via ConnectedChan /
+// DisconnectedChan) and updates the status bar accordingly.
+func (t *tui) monitorRelay() {
+	for {
+		select {
+		case <-t.done:
+			return
+		default:
+		}
+		// block until the relay disconnects
+		<-t.relayClient.DisconnectedChan()
+		t.setRelayStatus("disconnected")
+		t.ring.Logf("link relay disconnected")
+		t.wake()
+		// block until the relay reconnects
+		<-t.relayClient.ConnectedChan()
+		t.setRelayStatus("connected")
+		t.ring.Logf("link relay reconnected")
+		t.wake()
 	}
 }
 
@@ -337,6 +439,26 @@ func (t *tui) handleKey(ev *tcell.EventKey) {
 		return
 	}
 
+	// PgUp/PgDn in the log panel scroll by a full page
+	if t.showLogs {
+		_, h := t.screen.Size()
+		page := h - 1
+		if page < 1 {
+			page = 1
+		}
+		switch ev.Key() {
+		case tcell.KeyPgUp:
+			t.logScroll += page
+			return
+		case tcell.KeyPgDn:
+			t.logScroll -= page
+			if t.logScroll < 0 {
+				t.logScroll = 0
+			}
+			return
+		}
+	}
+
 	// content rewind controls while browsing history
 	if t.vt != nil && t.vt.viewOffset > 0 {
 		switch ev.Key() {
@@ -372,6 +494,23 @@ func (t *tui) handleKey(ev *tcell.EventKey) {
 }
 
 func (t *tui) handleMouse(ev *tcell.EventMouse) {
+	x, y := ev.Position()
+	_, h := t.screen.Size()
+
+	// left-click on the status bar regions
+	if y == h-1 && ev.Buttons() == tcell.Button1 {
+		if x >= t.clickF2X[0] && x < t.clickF2X[1] {
+			t.showLogs = !t.showLogs
+			t.logScroll = 0
+			return
+		}
+		if x >= t.clickF3X[0] && x < t.clickF3X[1] {
+			t.quit()
+			return
+		}
+		return
+	}
+
 	switch {
 	case ev.Buttons()&tcell.WheelUp != 0:
 		if t.showLogs {
@@ -420,7 +559,6 @@ func (t *tui) draw() {
 
 func (t *tui) drawLogs(w, y, count int) {
 	lines := t.ring.snapshot()
-	style := tcell.StyleDefault.Foreground(tcell.ColorSilver)
 	// render the last `count` lines; logScroll rewinds from the end
 	end := len(lines) - t.logScroll
 	start := end - count
@@ -428,7 +566,24 @@ func (t *tui) drawLogs(w, y, count int) {
 		start = 0
 	}
 	for i := 0; i < count && start+i < len(lines); i++ {
-		t.putLine(0, y+i, w, lines[start+i], style)
+		line := lines[start+i]
+		style := logLineStyle(line)
+		t.putLine(0, y+i, w, line, style)
+	}
+}
+
+// logLineStyle selects a colour based on the zerolog level marker in the line.
+func logLineStyle(line string) tcell.Style {
+	// ConsoleWriter format: "<time> <LEVEL> <message>"
+	switch {
+	case strings.Contains(line, " ERR "), strings.Contains(line, " FTAL "):
+		return tcell.StyleDefault.Foreground(tcell.ColorRed)
+	case strings.Contains(line, " WRN "):
+		return tcell.StyleDefault.Foreground(tcell.ColorYellow)
+	case strings.Contains(line, " DBG "), strings.Contains(line, " TRC "):
+		return tcell.StyleDefault.Foreground(tcell.ColorGray)
+	default:
+		return tcell.StyleDefault.Foreground(tcell.ColorSilver)
 	}
 }
 
@@ -446,31 +601,75 @@ func (t *tui) putLine(x, y, max int, text string, style tcell.Style) {
 }
 
 func (t *tui) drawStatus(w, y int) {
-	style := tcell.StyleDefault.Background(tcell.ColorNavy).Foreground(tcell.ColorWhite)
+	// dark modern theme: dark background, light text, subtle accent
+	barBg := tcell.NewRGBColor(0x23, 0x27, 0x2e)
+	barFg := tcell.NewRGBColor(0xc8, 0xcc, 0xd4)
+	accent := tcell.NewRGBColor(0x52, 0x9e, 0xff)
+	style := tcell.StyleDefault.Background(barBg).Foreground(barFg)
+
 	// clear line
 	for i := 0; i < w; i++ {
 		t.screen.SetContent(i, y, ' ', nil, style)
 	}
-	left := "● " + t.statusStr()
-	mid := "Latency " + t.latencyStr()
-	right := "F2 Logs  F3 Quit"
-	// draw with the status style
+
+	// left side: indicator + host + relay status
+	indicator := "●"
+	indicatorColor := tcell.NewRGBColor(0x3e, 0xb4, 0x6b) // green dot
+	relay := t.relayStatusStr()
+	if relay == "disconnected" || !t.connected {
+		indicator = "○"
+		indicatorColor = tcell.NewRGBColor(0xe0, 0x60, 0x60) // red dot
+		relay = "disconnected"
+	} else if relay == "reconnecting" {
+		indicator = "○"
+		indicatorColor = tcell.NewRGBColor(0xe0, 0xc0, 0x40) // amber dot
+	}
+	indStyle := tcell.StyleDefault.Background(barBg).Foreground(indicatorColor)
+	t.screen.SetContent(0, y, []rune(indicator)[0], nil, indStyle)
+
+	left := t.host()
+	if relay != "" && relay != "connected" {
+		left += " | " + relay
+	}
+	cx := 2
 	for i, r := range left {
-		t.screen.SetContent(i, y, r, nil, style)
-	}
-	cx := w/2 - len([]rune(mid))/2
-	if cx < 0 {
-		cx = 0
-	}
-	for i, r := range mid {
 		t.screen.SetContent(cx+i, y, r, nil, style)
 	}
+
+	// middle: latency (hidden when disconnected)
+	mid := ""
+	if t.connected {
+		mid = "Latency " + t.latencyStr()
+	}
+	if mid != "" {
+		mx := w/2 - len([]rune(mid))/2
+		if mx < 0 {
+			mx = 0
+		}
+		for i, r := range mid {
+			t.screen.SetContent(mx+i, y, r, nil, style)
+		}
+	}
+
+	// right side: clickable hotkey hints
+	right := "F2 Logs  F3 Quit"
 	rx := w - len([]rune(right))
 	if rx < 0 {
 		rx = 0
 	}
+	// record clickable regions ("F2 Logs" and "F3 Quit", two spaces between)
+	f2Len := len([]rune("F2 Logs"))
+	f3Len := len([]rune("F3 Quit"))
+	t.clickF2X = [2]int{rx, rx + f2Len}
+	t.clickF3X = [2]int{rx + f2Len + 2, rx + f2Len + 2 + f3Len}
+
+	hotkeyStyle := tcell.StyleDefault.Background(barBg).Foreground(accent)
 	for i, r := range right {
-		t.screen.SetContent(rx+i, y, r, nil, style)
+		s := style
+		if i < f2Len || (i >= f2Len+2 && i < f2Len+2+f3Len) {
+			s = hotkeyStyle
+		}
+		t.screen.SetContent(rx+i, y, r, nil, s)
 	}
 }
 
