@@ -14,11 +14,22 @@ linkterm server
 linkterm client -t <CONNECTOR_TOKEN>
 ```
 
-The server connects anonymously by default and prints a connector token, which is used by the client:
+How it works:
 
-```
-INF Connected successfully to LinkSocks server connectorID=3a8b4dfe5e605e01
-```
+1. The server connects to the relay anonymously. The relay assigns a
+   temporary identity (server token) which the server saves and uses to
+   reconnect with, so the same relay is reused across reconnects.
+2. The server then registers a connector token. Without `-t`, a random one
+   is generated and printed - use that on the client:
+
+   ```
+   INF Connected successfully to LinkSocks server connectorID=3a8b4dfe5e605e01
+   ```
+
+   ```
+   # On the client (machine accessing the terminal):
+   linkterm client -t 3a8b4dfe5e605e01
+   ```
 
 This method works everywhere - no port forwarding or firewall configuration needed!
 
@@ -38,7 +49,7 @@ You should use a complex token in this case, as anyone holding the token can con
 openssl rand -hex 16
 ```
 
-The connection is proxied via our public server: https://l.zetx.tech using [Linksocks](https://github.com/linksocks/linksocks). You can also host your Linksocks server on Cloudflare Workers: [linksocks/linksocks.js](https://github.com/linksocks/linksocks.js)
+The connection is proxied via our public relay: https://l.zetx.tech. You can also host your own relay on Cloudflare Workers: [linksocks/linksocks.js](https://github.com/linksocks/linksocks.js)
 
 ## Direct Connection Mode
 

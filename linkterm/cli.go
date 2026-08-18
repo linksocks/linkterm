@@ -89,14 +89,14 @@ func RunCLI() {
 	serverCmd.Flags().StringVarP(&serverHost, "host", "H", "localhost", "Host address to bind to")
 	serverCmd.Flags().StringVarP(&shellPath, "shell", "s", "", "Shell to use")
 	serverCmd.Flags().CountVarP(&debugCount, "debug", "d", "Debug level (-d=debug, -dd=trace)")
-	serverCmd.Flags().StringVarP(&linksocksToken, "token", "t", "anonymous", "LinkSocks token for intranet penetration")
-	serverCmd.Flags().StringVarP(&linksocksURL, "linksocks-url", "U", "https://l.zetx.tech", "LinkSocks server URL")
+	serverCmd.Flags().StringVarP(&linksocksToken, "token", "t", "anonymous", "Connector token clients use to reach this terminal (random if omitted)")
+	serverCmd.Flags().StringVarP(&linksocksURL, "linksocks-url", "U", "https://l.zetx.tech", "LinkSocks relay server URL")
 
 	// Add flags to client command
 	clientCmd.Flags().StringVarP(&clientURL, "url", "u", "ws://localhost:8080", "URL to connect to (e.g. example.com or ws://example.com:8080/terminal)")
 	clientCmd.Flags().CountVarP(&debugCount, "debug", "d", "Debug level (-d=debug, -dd=trace)")
-	clientCmd.Flags().StringVarP(&linksocksToken, "token", "t", "anonymous", "LinkSocks token for intranet penetration")
-	clientCmd.Flags().StringVarP(&linksocksURL, "linksocks-url", "U", "https://l.zetx.tech", "LinkSocks server URL")
+	clientCmd.Flags().StringVarP(&linksocksToken, "token", "t", "", "LinkSocks connector token from the server")
+	clientCmd.Flags().StringVarP(&linksocksURL, "linksocks-url", "U", "https://l.zetx.tech", "LinkSocks relay server URL")
 	clientCmd.Flags().StringVarP(&proxyURL, "proxy", "x", "", "Proxy URL (e.g. socks5://user:pass@host:port or http://user:pass@host:port)")
 	clientCmd.Flags().BoolVar(&tuiMode, "tui", false, "Use the tmux-like TUI client (content area + status bar + toggleable log panel)")
 
@@ -135,11 +135,15 @@ func runServer(cmd *cobra.Command, args []string) {
 	server := NewServer(serverPort, serverHost, shellPath)
 	server.SetLogger(logger)
 
-	// Start LinkSocks client if token is provided
-	if linksocksToken != "" {
-		logger.Info().Str("url", linksocksURL).Str("token", linksocksToken).Msg("Starting LinkSocks connection")
-		go runTunnel(cmd.Context(), linksocksToken, logger)
+	// Start the LinkSocks tunnel. The server always dials as an anonymous
+	// provider and mounts a connector token (random unless -t is given);
+	// "anonymous" here is just the sentinel meaning "no custom token".
+	tunnelToken := linksocksToken
+	if tunnelToken == "" {
+		tunnelToken = "anonymous"
 	}
+	logger.Info().Str("url", linksocksURL).Str("token", tunnelToken).Msg("Starting LinkSocks connection")
+	go runTunnel(cmd.Context(), tunnelToken, logger)
 
 	logger.Info().Int("port", serverPort).Str("shell", shellPath).Msg("Starting terminal server")
 	if err := server.Start(); err != nil {
