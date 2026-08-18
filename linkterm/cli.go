@@ -1,6 +1,7 @@
 package linkterm
 
 import (
+	"context"
 	"fmt"
 	"net"
 	"net/http"
@@ -8,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"runtime"
+	"strings"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -27,6 +29,9 @@ var (
 
 	// Client flags
 	clientURL string
+
+	// TUI flag
+	tuiMode bool
 
 	// LinkSocks flags
 	linksocksToken string
@@ -85,15 +90,16 @@ func RunCLI() {
 	serverCmd.Flags().StringVarP(&serverHost, "host", "H", "localhost", "Host address to bind to")
 	serverCmd.Flags().StringVarP(&shellPath, "shell", "s", "", "Shell to use")
 	serverCmd.Flags().CountVarP(&debugCount, "debug", "d", "Debug level (-d=debug, -dd=trace)")
-	serverCmd.Flags().StringVarP(&linksocksToken, "token", "t", "", "LinkSocks token for intranet penetration")
+	serverCmd.Flags().StringVarP(&linksocksToken, "token", "t", "anonymous", "LinkSocks token for intranet penetration")
 	serverCmd.Flags().StringVarP(&linksocksURL, "linksocks-url", "U", "https://l.zetx.tech", "LinkSocks server URL")
 
 	// Add flags to client command
 	clientCmd.Flags().StringVarP(&clientURL, "url", "u", "ws://localhost:8080", "URL to connect to (e.g. example.com or ws://example.com:8080/terminal)")
 	clientCmd.Flags().CountVarP(&debugCount, "debug", "d", "Debug level (-d=debug, -dd=trace)")
-	clientCmd.Flags().StringVarP(&linksocksToken, "token", "t", "", "LinkSocks token for intranet penetration")
+	clientCmd.Flags().StringVarP(&linksocksToken, "token", "t", "anonymous", "LinkSocks token for intranet penetration")
 	clientCmd.Flags().StringVarP(&linksocksURL, "linksocks-url", "U", "https://l.zetx.tech", "LinkSocks server URL")
 	clientCmd.Flags().StringVarP(&proxyURL, "proxy", "x", "", "Proxy URL (e.g. socks5://user:pass@host:port or http://user:pass@host:port)")
+	clientCmd.Flags().BoolVar(&tuiMode, "tui", false, "Use the tmux-like TUI client (content area + status bar + toggleable log panel)")
 
 	// Add commands to root command
 	rootCmd.AddCommand(serverCmd, clientCmd)
@@ -132,38 +138,113 @@ func runServer(cmd *cobra.Command, args []string) {
 
 	// Start LinkSocks client if token is provided
 	if linksocksToken != "" {
-		logger.Info().Str("url", linksocksURL).Msg("Starting LinkSocks connection")
-		clientOpt := linksocks.DefaultClientOption().
-			WithWSURL(linksocksURL).
-			WithReverse(true).
-			WithSocksHost("127.0.0.1").
-			WithSocksPort(0).
-			WithSocksWaitServer(true).
-			WithReconnect(true).
-			WithLogger(logger)
-
-		wsClient := linksocks.NewLinkSocksClient(linksocksToken, clientOpt)
-		defer wsClient.Close()
-
-		err := wsClient.WaitReady(cmd.Context(), 0)
-		if err != nil {
-			logger.Error().Err(err).Msg("Failed to connect to linksocks server")
-			os.Exit(1)
-		} else {
-			connectorID, err := wsClient.AddConnector(linksocksToken)
-			if err != nil {
-				logger.Error().Err(err).Msg("Failed to add connector token")
-				os.Exit(1)
-			} else {
-				logger.Info().Str("connectorID", connectorID).Msg("Connected successfully to LinkSocks server")
-			}
-		}
+		logger.Info().Str("url", linksocksURL).Str("token", linksocksToken).Msg("Starting LinkSocks connection")
+		go runTunnel(cmd.Context(), linksocksToken, logger)
 	}
 
 	logger.Info().Int("port", serverPort).Str("shell", shellPath).Msg("Starting terminal server")
 	if err := server.Start(); err != nil {
 		logger.Error().Err(err).Msg("Server error")
 		os.Exit(1)
+	}
+}
+
+// runTunnel maintains the reverse LinkSocks tunnel across reconnects.
+// It starts with the configured token (usually "anonymous"), remembers the
+// token assigned by the server, and reconnects with it first so the same
+// relay is reused within the server's grace period. If that fails the relay
+// was garbage-collected, so it falls back to a fresh anonymous connection.
+func runTunnel(ctx context.Context, token string, logger zerolog.Logger) {
+	currentToken := token
+	var connectorToken string
+
+	for {
+		if ctx.Err() != nil {
+			return
+		}
+
+		clientOpt := linksocks.DefaultClientOption().
+			WithWSURL(linksocksURL).
+			WithReverse(true).
+			WithSocksHost("127.0.0.1").
+			WithSocksPort(0).
+			WithSocksWaitServer(true).
+			WithLogger(logger)
+
+		wsClient := linksocks.NewLinkSocksClient(currentToken, clientOpt)
+
+		err := wsClient.WaitReady(ctx, 0)
+		if err != nil {
+			wsClient.Close()
+			if currentToken != "anonymous" {
+				logger.Warn().Err(err).Msg("Reconnect with server token failed, falling back to anonymous")
+				currentToken = "anonymous"
+				continue
+			}
+			logger.Warn().Err(err).Msg("LinkSocks connection failed, retrying in 5s")
+			if !sleepCtx(ctx, 5*time.Second) {
+				return
+			}
+			continue
+		}
+
+		// Remember the token assigned by the server so the next reconnect
+		// targets the same relay while it is still alive.
+		if serverToken := wsClient.GetServerToken(); serverToken != "" {
+			currentToken = serverToken
+			logger.Info().Str("serverToken", serverToken).Msg("LinkSocks server assigned a relay token")
+		}
+
+		// Reuse the same connector token across reconnects: it stays valid
+		// while the relay is unchanged, and re-registering it on the same
+		// relay is idempotent.
+		connectorID, err := registerConnector(wsClient, connectorToken, logger)
+		if err != nil {
+			logger.Error().Err(err).Msg("Failed to add connector token")
+			wsClient.Close()
+			if strings.Contains(strings.ToLower(err.Error()), "already exists") {
+				// The connector token is bound to another relay, so use a fresh one
+				connectorToken = ""
+			}
+			if !sleepCtx(ctx, 5*time.Second) {
+				return
+			}
+			continue
+		}
+		connectorToken = connectorID
+
+		logger.Info().Str("connectorID", connectorID).Msg("Connected successfully to LinkSocks server")
+
+		// Wait for the connection to drop, then reconnect
+		disconnected := wsClient.DisconnectedChan()
+		select {
+		case <-disconnected:
+			logger.Warn().Msg("LinkSocks connection lost, reconnecting")
+		case <-ctx.Done():
+			wsClient.Close()
+			return
+		}
+		wsClient.Close()
+	}
+}
+
+// registerConnector registers a connector token and returns it.
+// An empty connector token makes the server generate a random one.
+func registerConnector(wsClient *linksocks.LinkSocksClient, connectorToken string, logger zerolog.Logger) (string, error) {
+	connectorID, err := wsClient.AddConnector(connectorToken)
+	if err != nil {
+		return "", err
+	}
+	return connectorID, nil
+}
+
+// sleepCtx sleeps for d unless the context is cancelled first.
+func sleepCtx(ctx context.Context, d time.Duration) bool {
+	select {
+	case <-ctx.Done():
+		return false
+	case <-time.After(d):
+		return true
 	}
 }
 
@@ -179,6 +260,8 @@ func runClient(cmd *cobra.Command, args []string) {
 
 	var customDialer *websocket.Dialer
 	var wsocksLocalPort int
+	// rttFn reports the link RTT when connected via linksocks; nil otherwise.
+	var rttFn func() time.Duration
 
 	// Start LinkSocks client if token is provided
 	if linksocksToken != "" {
@@ -213,6 +296,7 @@ func runClient(cmd *cobra.Command, args []string) {
 		} else {
 			logger.Info().Msg("Connected successfully to LinkSocks server")
 		}
+		rttFn = wsClient.GetRTT
 
 		// Configure WebSocket dialer to use LinkSocks SOCKS5 proxy
 		customDialer = &websocket.Dialer{
@@ -241,6 +325,24 @@ func runClient(cmd *cobra.Command, args []string) {
 	termClient.SetLogger(logger)
 	if customDialer != nil {
 		termClient.SetCustomDialer(customDialer)
+	}
+
+	if tuiMode {
+		// tmux-like TUI: content area renders the remote terminal, the
+		// bottom status bar shows host / latency, F2 toggles the log panel.
+		t := newTUI(termClient.URL, customDialer, rttFn)
+		// route all logs into the TUI log panel instead of stdout (stdout is
+		// owned by the TUI here).
+		level := logger.GetLevel()
+		logger = zerolog.New(zerolog.ConsoleWriter{
+			Out: t.ring, NoColor: true, TimeFormat: time.RFC3339,
+		}).Level(level).With().Timestamp().Logger()
+		t.ring.Logf("LinkTerm TUI — connecting to %s", termClient.URL)
+		if err := t.Run(); err != nil {
+			logger.Error().Err(err).Msg("TUI error")
+			os.Exit(1)
+		}
+		return
 	}
 
 	if err := termClient.Connect(); err != nil {

@@ -110,6 +110,11 @@ func (s *Server) handleTerminal(w http.ResponseWriter, r *http.Request) {
 	}
 	defer conn.Close()
 
+	// Reply to protocol-level pings so TUI clients can measure latency.
+	conn.SetPingHandler(func(appData string) error {
+		return conn.WriteControl(websocket.PongMessage, []byte(appData), time.Now().Add(10*time.Second))
+	})
+
 	// Record connection start time
 	startTime := time.Now()
 	s.logger.Info().Str("clientIP", clientIP).Str("userAgent", userAgent).Msg("Client connected")
