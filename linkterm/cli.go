@@ -177,7 +177,12 @@ func runTunnel(ctx context.Context, token string, logger zerolog.Logger) {
 		if err != nil {
 			wsClient.Close()
 			if currentToken != "anonymous" {
-				logger.Warn().Err(err).Msg("Reconnect with server token failed, falling back to anonymous")
+				// Either the user-supplied token was rejected, or the token
+				// previously assigned by the relay no longer works (relay was
+				// garbage-collected or tombstoned). Fall back to a fresh
+				// anonymous provider so the tunnel stays up with a new relay.
+				logger.Warn().Err(err).Str("token", currentToken).
+					Msg("LinkSocks connect with token failed, falling back to anonymous")
 				currentToken = "anonymous"
 				continue
 			}
