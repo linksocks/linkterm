@@ -2,8 +2,6 @@ module github.com/linksocks/linkterm
 
 go 1.25.0
 
-replace github.com/linksocks/linksocks => ../linktransfer/ref/linksocks
-
 require (
 	github.com/UserExistsError/conpty v0.1.4
 	github.com/creack/pty v1.1.24
