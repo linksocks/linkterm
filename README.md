@@ -23,7 +23,8 @@ How it works:
    is generated and printed - use that on the client:
 
    ```
-   INF Connected successfully to LinkSocks server connectorID=3a8b4dfe5e605e01
+   INF Connected to LinkSocks server
+   INF Connect with: linkterm client -t 3a8b4dfe5e605e01
    ```
 
    ```
@@ -58,15 +59,15 @@ For local network or when you have direct access:
 Server:
 
 ```bash
-# Host server at 8080
-./linkterm server --port 8080 --host localhost
+# Host server at 8273
+./linkterm server --port 8273 --host localhost
 ```
 
 Client:
 
 ```bash
 # Connect to local server
-./linkterm client --url ws://localhost:8080
+./linkterm client --url ws://localhost:8273
 ```
 
 ## TUI Client (tmux-like)
@@ -79,10 +80,10 @@ happens automatically when stdout is not a terminal, e.g. in a pipe).
 
 ```bash
 # default: TUI on a terminal
-./linkterm client --url ws://localhost:8080
+./linkterm client --url ws://localhost:8273
 
 # plain console mode
-./linkterm client --no-tui --url ws://localhost:8080
+./linkterm client --no-tui --url ws://localhost:8273
 ```
 
 Layout (top to bottom):
@@ -96,29 +97,43 @@ Layout (top to bottom):
 +---------------------------------------------+
 ```
 
-The status bar shows (left to right) a connection dot, the remote host, the
-link latency, and the clickable hotkey hints. The dot is green when connected,
-amber while reconnecting, and red when disconnected, in which case the host is
-followed by the relay state (`disconnected` / `reconnecting`) and the latency
-is hidden.
+The status bar shows (left to right) a connection dot, the remote host or
+connection state, the link latency, and the clickable hotkey hints. The dot
+is amber while connecting, green when connected, and red when the connection
+failed or is disconnected, in which case the status text shows
+`Connection failed` / `Disconnected` plus the reason and the latency is
+hidden.
+
+The TUI opens immediately and the link connection runs inside it: while the
+relay handshake and the terminal dial are in progress the status bar shows
+`Connecting to <host>...`, every client log line lands in the F2 panel in
+real time (colour-coded by level), and a failed connection keeps the TUI
+alive so you can read the logs before quitting with F3 (which exits with a
+non-zero code and prints a concise error on stderr).
 
 Keys:
 
 | Key | Action |
 | --- | --- |
-| `F2` | toggle the fullscreen log panel (all client logs land here, colour-coded by level) |
+| `F2` | toggle the fullscreen log panel (all client logs land here, with zerolog timestamps and colour-coded levels) |
 | `F3` / `Ctrl+Q` | quit the TUI |
 | mouse wheel | rewind the content scrollback; scrolls the log panel when it is open |
+| left mouse drag (log panel) | select log text; long lines wrap to the panel width |
+| `Ctrl+C` (log panel) | copy the selected text through the terminal clipboard (OSC 52) |
 | `PgUp` / `PgDn` (log panel) | scroll the log panel by one page |
 | `Esc` / `g` (while rewound) | jump back to the live screen |
 
 Clicking the `F2 Logs` / `F3 Quit` text in the status bar works the same as
 pressing the keys. All other keys are forwarded to the remote terminal as
-usual; logs are routed into the log panel instead of stdout.
+usual; logs are routed into the log panel instead of stdout. Log entries use
+the same zerolog console layout as plain mode (`timestamp level message`),
+with timestamps dimmed and level markers colour-coded.
 
-If the terminal WebSocket drops, the TUI keeps the last screen, shows the
-disconnected status and automatically reconnects with exponential backoff,
-restoring the session when the link recovers.
+If the terminal WebSocket drops, the TUI keeps the last screen, shows a red
+`Disconnected` status and automatically reconnects with exponential backoff,
+restoring the session when the link recovers. The relay state is appended to
+the host (`disconnected` / `reconnecting`) when the terminal stays up but the
+link relay link drops.
 
 Note: a connector token is validated by the relay (at least 8 characters and
 not a trivial pattern like `abc123`). If you pass an explicit weak `-t` to
