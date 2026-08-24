@@ -411,14 +411,16 @@ func runClient(cmd *cobra.Command, args []string) {
 				logger.Info().Dur("elapsed", time.Since(connectStart).Round(time.Millisecond)).
 					Msg("Connected to link relay")
 				logger.Info().Msg("Connected successfully to LinkSocks server")
-				rttFn = wsClient.GetRTT
-				tUI.relayClient = wsClient
-				tUI.setPathFn(func() string {
-					if wsClient.IsDirectQUICActive() {
-						return "direct"
+				rttFn = func() time.Duration {
+					if wsClient.DataPath() == "direct" {
+						if d := wsClient.GetDirectRTT(); d > 0 {
+							return d
+						}
 					}
-					return "relay"
-				})
+					return wsClient.GetRTT()
+				}
+				tUI.relayClient = wsClient
+				tUI.setPathFn(wsClient.DataPath)
 				tUI.rttFn = rttFn
 
 				// Configure WebSocket dialer to use LinkSocks SOCKS5 proxy
@@ -514,7 +516,14 @@ func runClient(cmd *cobra.Command, args []string) {
 		stderrLog.Info().Dur("elapsed", time.Since(connectStart).Round(time.Millisecond)).
 			Msg("Connected to link relay")
 		logger.Info().Msg("Connected successfully to LinkSocks server")
-		rttFn = wsClient.GetRTT
+		rttFn = func() time.Duration {
+			if wsClient.DataPath() == "direct" {
+				if d := wsClient.GetDirectRTT(); d > 0 {
+					return d
+				}
+			}
+			return wsClient.GetRTT()
+		}
 
 		// Configure WebSocket dialer to use LinkSocks SOCKS5 proxy
 		customDialer = &websocket.Dialer{

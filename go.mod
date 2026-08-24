@@ -7,7 +7,7 @@ require (
 	github.com/creack/pty v1.1.24
 	github.com/gdamore/tcell/v2 v2.13.10
 	github.com/gorilla/websocket v1.5.3
-	github.com/linksocks/linksocks v1.9.5
+	github.com/linksocks/linksocks v1.9.6
 	github.com/rs/zerolog v1.33.0
 	github.com/spf13/cobra v1.9.1
 	golang.org/x/sys v0.45.0
