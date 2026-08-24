@@ -217,23 +217,34 @@ func (v *vt) putByte(b byte) {
 
 // --- output primitives ------------------------------------------------------
 
+// putRune places a printable rune at the cursor. CJK characters are
+// double-width: they occupy two cells, the second being a continuation
+// marker (r == 0) that render() skips.
 func (v *vt) putRune(r rune) {
 	if v.lineDraw {
 		if g, ok := acsGlyphs[r]; ok {
 			r = g
 		}
 	}
+	rw := runeWidth(r)
+	// a wide char does not fit in the last column: wrap first
+	if rw > 1 && v.curX >= v.w {
+		v.wrapNewline()
+	}
+	if rw > 1 && v.curX == v.w-1 {
+		v.wrapNewline()
+	}
 	if v.curX >= v.w {
 		v.wrapNewline()
 	}
 	v.rows[v.abs(v.curY)].cells[v.curX] = v.makeCell(r)
-	if v.curX < v.w-1 {
-		v.curX++
-	} else {
-		// consumed the last column; next printable char wraps
-		if v.curX == v.w-1 {
-			v.curX = v.w // triggers wrap on next put
-		}
+	if rw > 1 && v.curX+1 < v.w {
+		// continuation cell: rendered as part of the wide rune
+		v.rows[v.abs(v.curY)].cells[v.curX+1] = vtCell{r: 0}
+	}
+	v.curX += rw
+	if v.curX >= v.w {
+		v.curX = v.w // triggers wrap on next put
 	}
 }
 
@@ -260,6 +271,11 @@ func (v *vt) lineFeed() {
 	}
 }
 
+// backspace implements BS (0x08): move the cursor one column left.
+// It is a raw cursor move, not aware of wide characters — the remote
+// program (e.g. bash readline) sends one BS per column based on its own
+// wcwidth knowledge, so double-width handling here would over-shoot and
+// corrupt the prompt.
 func (v *vt) backspace() {
 	if v.curX > 0 {
 		v.curX--
@@ -737,12 +753,12 @@ func (v *vt) render(s tcell.Screen, x0, y0 int) {
 		row := v.rows[abs]
 		for x := 0; x < v.w && x < len(row.cells); x++ {
 			c := row.cells[x]
+			if c.r == 0 {
+				continue // right half of a wide (CJK) character
+			}
 			st := v.styleFor(c)
 			if y == v.curY && x == v.curX && v.curVisible && v.viewOffset == 0 {
 				st = st.Reverse(true)
-			}
-			if c.r == 0 {
-				c.r = ' '
 			}
 			s.SetContent(x0+x, y0+y, c.r, nil, st)
 		}
@@ -805,6 +821,28 @@ func parseParams(s string) []int {
 		}
 	}
 	return out
+}
+
+// runeWidth returns the terminal display width of a rune: 2 for CJK wide
+// characters (Han ideographs, fullwidth forms, Hangul, CJK punctuation),
+// 1 for everything else. It approximates wcwidth without extra deps.
+func runeWidth(r rune) int {
+	if r < 0x1100 {
+		return 1
+	}
+	switch {
+	case r >= 0x1100 && r <= 0x115f, // Hangul Jamo
+		r >= 0x2e80 && r <= 0xa4cf, // CJK Radicals .. Yi (incl. Han ideographs)
+		r >= 0xac00 && r <= 0xd7a3, // Hangul Syllables
+		r >= 0xf900 && r <= 0xfaff, // CJK Compatibility Ideographs
+		r >= 0xfe30 && r <= 0xfe6f, // CJK Compatibility Forms
+		r >= 0xff00 && r <= 0xff60, // Fullwidth Forms
+		r >= 0xffe0 && r <= 0xffe6,
+		r >= 0x1f004 && r <= 0x1f0ff, // enclosed ideographic supplement glyphs
+		r >= 0x20000 && r <= 0x3fffd: // CJK Ext. B.. supplement
+		return 2
+	}
+	return 1
 }
 
 // acsGlyphs maps the DEC/VT Graphics (line-drawing) repertoire to Unicode.

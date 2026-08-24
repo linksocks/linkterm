@@ -73,10 +73,7 @@ type quietWriter struct {
 
 func (w quietWriter) Write(p []byte) (int, error) {
 	s := string(p)
-	if strings.Contains(s, "is connecting to") ||
-		strings.Contains(s, "Using proxy from environment") ||
-		strings.Contains(s, "Welcome to LinkSocks.js") ||
-		strings.Contains(s, "Server ready, latency") {
+	if strings.Contains(s, "Server ready, latency") {
 		return len(p), nil // drop
 	}
 	return w.inner.Write(p)
@@ -105,15 +102,15 @@ func RunCLI() {
 	}
 
 	// Add flags to server command
-	serverCmd.Flags().IntVarP(&serverPort, "port", "P", 8080, "Port to listen on")
+	serverCmd.Flags().IntVarP(&serverPort, "port", "P", 8273, "Port to listen on")
 	serverCmd.Flags().StringVarP(&serverHost, "host", "H", "localhost", "Host address to bind to")
 	serverCmd.Flags().StringVarP(&shellPath, "shell", "s", "", "Shell to use")
 	serverCmd.Flags().CountVarP(&debugCount, "debug", "d", "Debug level (-d=debug, -dd=trace)")
-	serverCmd.Flags().StringVarP(&linksocksToken, "token", "t", "anonymous", "Connector token clients use to reach this terminal (random if omitted)")
+	serverCmd.Flags().StringVarP(&linksocksToken, "token", "t", "", "Connector token clients use to reach this terminal (generated and printed if omitted)")
 	serverCmd.Flags().StringVarP(&linksocksURL, "linksocks-url", "U", "https://l.zetx.tech", "LinkSocks relay server URL")
 
 	// Add flags to client command
-	clientCmd.Flags().StringVarP(&clientURL, "url", "u", "ws://localhost:8080", "URL to connect to (e.g. example.com or ws://example.com:8080/terminal)")
+	clientCmd.Flags().StringVarP(&clientURL, "url", "u", "ws://localhost:8273", "URL to connect to (e.g. example.com or ws://example.com:8273/terminal)")
 	clientCmd.Flags().CountVarP(&debugCount, "debug", "d", "Debug level (-d=debug, -dd=trace)")
 	clientCmd.Flags().StringVarP(&linksocksToken, "token", "t", "", "LinkSocks connector token from the server")
 	clientCmd.Flags().StringVarP(&linksocksURL, "linksocks-url", "U", "https://l.zetx.tech", "LinkSocks relay server URL")
@@ -154,6 +151,11 @@ func runServer(cmd *cobra.Command, args []string) {
 
 	server := NewServer(serverPort, serverHost, shellPath)
 	server.SetLogger(logger)
+	dialAccessControl, err := newLinkTermDialAccessControl(serverPort)
+	if err != nil {
+		logger.Error().Err(err).Msg("Invalid LinkTerm server port")
+		os.Exit(1)
+	}
 
 	// Start the LinkSocks tunnel. The server always dials as an anonymous
 	// provider and mounts a connector token (random unless -t is given);
@@ -162,11 +164,11 @@ func runServer(cmd *cobra.Command, args []string) {
 	if tunnelToken == "" {
 		tunnelToken = "anonymous"
 	}
-	logger.Info().Str("url", linksocksURL).Str("token", tunnelToken).Msg("Starting LinkSocks connection")
+	logger.Info().Str("url", linksocksURL).Msg("Starting LinkSocks connection")
 
 	errCh := make(chan error, 2)
 	go func() {
-		if err := runTunnel(cmd.Context(), tunnelToken, logger); err != nil {
+		if err := runTunnel(cmd.Context(), tunnelToken, dialAccessControl, logger); err != nil {
 			errCh <- err
 		}
 	}()
@@ -176,7 +178,7 @@ func runServer(cmd *cobra.Command, args []string) {
 		}
 	}()
 	if err := <-errCh; err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		logger.Error().Err(err).Msg("Fatal error")
 		os.Exit(1)
 	}
 }
@@ -192,7 +194,7 @@ func runServer(cmd *cobra.Command, args []string) {
 //
 // Returns nil on clean shutdown (ctx cancelled), or a fatal error when the
 // user-specified connector token is rejected by the relay.
-func runTunnel(ctx context.Context, token string, logger zerolog.Logger) error {
+func runTunnel(ctx context.Context, token string, dialAccessControl *linksocks.AccessControl, logger zerolog.Logger) error {
 	currentToken := "anonymous"
 	var connectorToken string
 
@@ -207,6 +209,7 @@ func runTunnel(ctx context.Context, token string, logger zerolog.Logger) error {
 			WithSocksHost("127.0.0.1").
 			WithSocksPort(0).
 			WithSocksWaitServer(true).
+			WithDialAccessControl(dialAccessControl).
 			WithLogger(logger)
 
 		wsClient := linksocks.NewLinkSocksClient(currentToken, clientOpt)
@@ -263,7 +266,8 @@ func runTunnel(ctx context.Context, token string, logger zerolog.Logger) error {
 			connectorToken = cid
 		}
 
-		logger.Info().Str("connectorID", connectorToken).Msg("Connected successfully to LinkSocks server")
+		logger.Info().Msg("Connected to LinkSocks server")
+		logger.Info().Msgf("Connect with: linkterm client -t %s", connectorToken)
 
 		// Wait for the connection to drop, then reconnect
 		disconnected := wsClient.DisconnectedChan()
@@ -276,6 +280,12 @@ func runTunnel(ctx context.Context, token string, logger zerolog.Logger) error {
 		}
 		wsClient.Close()
 	}
+}
+
+func newLinkTermDialAccessControl(port int) (*linksocks.AccessControl, error) {
+	return linksocks.NewAccessControl([]linksocks.AccessRule{{
+		Ports: []linksocks.PortSpec{linksocks.SinglePort(port)},
+	}})
 }
 
 // registerConnector registers a connector token and returns it.
@@ -311,6 +321,13 @@ func runClient(cmd *cobra.Command, args []string) {
 	// Initialize logger with the specified debug level
 	logger := initLogging(debugCount)
 
+	// stderrLog keeps the standard console format for fatal errors, which is
+	// needed in TUI mode because the main logger is routed into the log ring
+	// and stays invisible when the TUI screen never started.
+	stderrLog := zerolog.New(quietWriter{zerolog.ConsoleWriter{
+		Out: os.Stderr, NoColor: true, TimeFormat: time.RFC3339,
+	}}).With().Timestamp().Logger()
+
 	// TUI is the default; it only activates when stdout is a terminal.
 	tuiMode := !tuiNoFlag && isTerminal(os.Stdout)
 
@@ -332,25 +349,138 @@ func runClient(cmd *cobra.Command, args []string) {
 	// wsClient is created — this way all linksocks logs land in the panel.
 	var tUI *tui
 	if tuiMode {
-		tUI = newTUI(termClient.URL, nil, nil) // dialer/rttFn filled later
+		tUI = newTUI(termClient.URL, nil, nil) // dialer/rttFn filled by connectFn
 		level := logger.GetLevel()
 		logger = zerolog.New(quietWriter{zerolog.ConsoleWriter{
 			Out: tUI.ring, NoColor: true, TimeFormat: time.RFC3339,
 		}}).Level(level).With().Timestamp().Logger()
 	}
 
-	// Start LinkSocks client if token is provided
+	var wsClient *linksocks.LinkSocksClient
+
+	if tuiMode {
+		// In TUI mode the relay/proxy setup runs inside connectFn, which is
+		// invoked asynchronously after the screen starts. The screen opens
+		// immediately with "Connecting...", progress and errors land in the
+		// log ring (F2 panel) instead of stderr, and the terminal dial only
+		// happens once the link is ready.
+		tUI.connectFn = func() error {
+			if linksocksToken != "" {
+				logger.Info().Str("token", linksocksToken).Str("url", linksocksURL).Msg("Starting LinkSocks client")
+
+				// Find a random available port on localhost
+				listener, err := net.Listen("tcp", "127.0.0.1:0")
+				if err != nil {
+					return fmt.Errorf("find available port: %w", err)
+				}
+				wsocksLocalPort = listener.Addr().(*net.TCPAddr).Port
+				listener.Close()
+
+				clientOpt := linksocks.DefaultClientOption().
+					WithWSURL(linksocksURL).
+					WithSocksHost("127.0.0.1").
+					WithSocksPort(wsocksLocalPort).
+					WithSocksWaitServer(true).
+					WithReconnect(true).
+					WithLogger(logger)
+
+				wsClient = linksocks.NewLinkSocksClient(linksocksToken, clientOpt)
+
+				// WaitReady can block for a long time on a slow relay; log
+				// progress so it does not look like the client is stuck.
+				logger.Info().Str("url", linksocksURL).Msg("Connecting to link relay")
+				connectStart := time.Now()
+				connErr := make(chan error, 1)
+				go func() { connErr <- wsClient.WaitReady(cmd.Context(), 0) }()
+				progress := time.NewTicker(3 * time.Second)
+				var connectErr error
+				for {
+					select {
+					case connectErr = <-connErr:
+					case <-progress.C:
+						logger.Info().Dur("elapsed", time.Since(connectStart).Round(time.Second)).
+							Msg("Still connecting to link relay...")
+						continue
+					}
+					break
+				}
+				progress.Stop()
+				if connectErr != nil {
+					return fmt.Errorf("connect to link relay: %w", connectErr)
+				}
+				logger.Info().Dur("elapsed", time.Since(connectStart).Round(time.Millisecond)).
+					Msg("Connected to link relay")
+				logger.Info().Msg("Connected successfully to LinkSocks server")
+				// Report the RTT of the active data path: the direct QUIC
+				// plane when it is up, otherwise the relay WebSocket. GetRTT
+				// alone measures the relay link and misleads while direct
+				// transport is in use.
+				rttFn = func() time.Duration {
+					if wsClient.DataPath() == "direct" {
+						if d := wsClient.GetDirectRTT(); d > 0 {
+							return d
+						}
+					}
+					return wsClient.GetRTT()
+				}
+				tUI.relayClient = wsClient
+				tUI.setPathFn(wsClient.DataPath)
+				tUI.rttFn = rttFn
+
+				// Configure WebSocket dialer to use LinkSocks SOCKS5 proxy
+				customDialer = &websocket.Dialer{
+					Proxy: func(*http.Request) (*url.URL, error) {
+						return url.Parse(fmt.Sprintf("socks5://127.0.0.1:%d", wsocksLocalPort))
+					},
+					HandshakeTimeout: 10 * time.Second,
+				}
+				tUI.dialer = customDialer
+				return nil
+			}
+
+			if proxyURL != "" {
+				// Configure WebSocket dialer to use the provided proxy
+				proxyURLParsed, err := url.Parse(proxyURL)
+				if err != nil {
+					return fmt.Errorf("invalid proxy URL %q: %w", proxyURL, err)
+				}
+				logger.Info().Str("proxy", proxyURL).Msg("Using proxy")
+				customDialer = &websocket.Dialer{
+					Proxy:            http.ProxyURL(proxyURLParsed),
+					HandshakeTimeout: 10 * time.Second,
+				}
+				tUI.dialer = customDialer
+				return nil
+			}
+			return nil // direct connection
+		}
+
+		tUI.logger.Info().Msgf("LinkTerm TUI — connecting to %s", termClient.URL)
+		if err := tUI.Run(); err != nil {
+			// TUI already Fini'd; report the failure in the regular console
+			// format with a concise, actionable message (the raw error is
+			// kept in the log ring).
+			stderrLog.Error().Msgf("Cannot connect to %s: %s", termClient.URL, friendlyErr(err))
+			os.Exit(1)
+		}
+		if wsClient != nil {
+			wsClient.Close()
+		}
+		return
+	}
+
+	// Non-TUI console mode: connect synchronously before displaying the
+	// remote terminal, with progress and errors on stderr.
+	var connectErr error
 	if linksocksToken != "" {
 		logger.Info().Str("token", linksocksToken).Str("url", linksocksURL).Msg("Starting LinkSocks client")
 
 		// Find a random available port on localhost
 		listener, err := net.Listen("tcp", "127.0.0.1:0")
 		if err != nil {
-			logger.Error().Err(err).Msg("Failed to find available port")
+			stderrLog.Error().Err(err).Msg("Failed to find available port")
 			os.Exit(1)
 		}
-
-		// Get the port assigned by the system
 		wsocksLocalPort = listener.Addr().(*net.TCPAddr).Port
 		listener.Close()
 
@@ -362,18 +492,44 @@ func runClient(cmd *cobra.Command, args []string) {
 			WithReconnect(true).
 			WithLogger(logger)
 
-		wsClient := linksocks.NewLinkSocksClient(linksocksToken, clientOpt)
+		wsClient = linksocks.NewLinkSocksClient(linksocksToken, clientOpt)
 		defer wsClient.Close()
 
-		err = wsClient.WaitReady(cmd.Context(), 0)
-		if err != nil {
-			logger.Error().Err(err).Msg("Failed to connect to link relay")
+		// WaitReady can block for a long time on a slow relay; print progress
+		// so it does not look like the client is stuck.
+		stderrLog.Info().Str("url", linksocksURL).Msg("Connecting to link relay")
+		connectStart := time.Now()
+		connErr := make(chan error, 1)
+		go func() { connErr <- wsClient.WaitReady(cmd.Context(), 0) }()
+		progress := time.NewTicker(3 * time.Second)
+		for {
+			select {
+			case connectErr = <-connErr:
+			case <-progress.C:
+				stderrLog.Info().Dur("elapsed", time.Since(connectStart).Round(time.Second)).
+					Msg("Still connecting to link relay...")
+				continue
+			}
+			break
+		}
+		progress.Stop()
+		if connectErr != nil {
+			stderrLog.Error().Err(connectErr).Msg("Failed to connect to link relay")
 			os.Exit(1)
 		}
+		stderrLog.Info().Dur("elapsed", time.Since(connectStart).Round(time.Millisecond)).
+			Msg("Connected to link relay")
 		logger.Info().Msg("Connected successfully to LinkSocks server")
-		rttFn = wsClient.GetRTT
-		if tUI != nil {
-			tUI.relayClient = wsClient
+		// Report the RTT of the active data path: the direct QUIC plane when
+		// it is up, otherwise the relay WebSocket. GetRTT alone measures the
+		// relay link and misleads while direct transport is in use.
+		rttFn = func() time.Duration {
+			if wsClient.DataPath() == "direct" {
+				if d := wsClient.GetDirectRTT(); d > 0 {
+					return d
+				}
+			}
+			return wsClient.GetRTT()
 		}
 
 		// Configure WebSocket dialer to use LinkSocks SOCKS5 proxy
@@ -387,7 +543,7 @@ func runClient(cmd *cobra.Command, args []string) {
 		// Configure WebSocket dialer to use the provided proxy
 		proxyURLParsed, err := url.Parse(proxyURL)
 		if err != nil {
-			logger.Error().Err(err).Str("proxy", proxyURL).Msg("Invalid proxy URL")
+			stderrLog.Error().Err(err).Str("proxy", proxyURL).Msg("Invalid proxy URL")
 			os.Exit(1)
 		}
 
@@ -404,22 +560,21 @@ func runClient(cmd *cobra.Command, args []string) {
 		termClient.SetCustomDialer(customDialer)
 	}
 
-	if tuiMode {
-		// tmux-like TUI: content area renders the remote terminal, the
-		// bottom status bar shows host / latency, F2 toggles the log panel.
-		tUI.dialer = customDialer
-		tUI.rttFn = rttFn
-		tUI.ring.Logf("LinkTerm TUI — connecting to %s", termClient.URL)
-		if err := tUI.Run(); err != nil {
-			// TUI already Fini'd; print to stderr
-			fmt.Fprintf(os.Stderr, "TUI error: %v\n", err)
-			os.Exit(1)
-		}
-		return
-	}
-
 	if err := termClient.Connect(); err != nil {
 		logger.Error().Err(err).Msg("Connection error")
 		os.Exit(1)
 	}
+}
+
+// friendlyErr maps low-level connection failures to a concise, actionable
+// message for the TUI failure line, hiding transport internals.
+func friendlyErr(err error) string {
+	msg := err.Error()
+	switch {
+	case strings.Contains(msg, "i/o timeout") || strings.Contains(msg, "context deadline exceeded"):
+		return "connection timed out — is the terminal server running and reachable?"
+	case strings.Contains(msg, "connection refused"):
+		return "connection refused — is the terminal server running?"
+	}
+	return msg
 }
