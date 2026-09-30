@@ -23,8 +23,8 @@ How it works:
    is generated and printed - use that on the client:
 
    ```
-   INF Connected to LinkSocks server
-   INF Connect with: linkterm client -t 3a8b4dfe5e605e01
+   INF Server is online
+   INF Clients can connect with: linkterm client -t 3a8b4dfe5e605e01
    ```
 
    ```

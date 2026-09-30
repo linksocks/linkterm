@@ -266,8 +266,8 @@ func runTunnel(ctx context.Context, token string, dialAccessControl *linksocks.A
 			connectorToken = cid
 		}
 
-		logger.Info().Msg("Connected to LinkSocks server")
-		logger.Info().Msgf("Connect with: linkterm client -t %s", connectorToken)
+		logger.Info().Msg("Server is online")
+		logger.Info().Msgf("Clients can connect with: linkterm client -t %s", connectorToken)
 
 		// Wait for the connection to drop, then reconnect
 		disconnected := wsClient.DisconnectedChan()
